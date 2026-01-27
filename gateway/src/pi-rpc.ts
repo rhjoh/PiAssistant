@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
-import type { PiCommand, PiEvent, PiResponse } from "./types.js";
+import type { PiCommand, PiEvent, PiResponse, PiState } from "./types.js";
 
 export interface PiRpcEvents {
   event: [PiEvent];
@@ -35,7 +35,12 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       return;
     }
 
-    this.process = spawn("pi", ["--mode", "rpc", "--session", this.sessionPath], {
+    // IMPORTANT: Don't pass --provider/--model to Pi
+    // Let Pi restore model from session's model_change entry
+    // We'll send set_model via RPC after Pi is ready if needed
+    const args = ["--mode", "rpc", "--session", this.sessionPath];
+
+    this.process = spawn("pi", args, {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -115,6 +120,28 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   async getState(): Promise<PiResponse> {
     return this.sendAndWait({ type: "get_state" });
+  }
+
+  async getAvailableModels(): Promise<PiResponse> {
+    return this.sendAndWait({ type: "get_available_models" });
+  }
+
+  /**
+   * Send set_model RPC command to change the model.
+   * This writes a model_change entry to the session, so it persists.
+   */
+  async setModelViaRpc(provider: string, modelId: string): Promise<void> {
+    const response = await this.sendAndWait({
+      type: "set_model",
+      provider,
+      modelId,
+    });
+
+    if (!response.success) {
+      throw new Error(response.error ?? "Failed to set model");
+    }
+
+    console.log(`[Pi RPC] Model set to ${provider}/${modelId}`);
   }
 
   send(command: PiCommand): void {

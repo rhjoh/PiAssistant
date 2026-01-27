@@ -86,10 +86,13 @@ export type MessageHandler = (
 
 export type StatusHandler = (ctx: Context) => Promise<string | void>;
 
+export type ModelHandler = (ctx: Context, args: string) => Promise<string | void>;
+
 export class TelegramBot {
   private bot: Bot;
   private messageHandler: MessageHandler | null = null;
   private statusHandler: StatusHandler | null = null;
+  private modelHandler: ModelHandler | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
@@ -117,10 +120,31 @@ export class TelegramBot {
       try {
         const response = await this.statusHandler(ctx);
         if (response) {
-          await ctx.reply(response);
+          await this.replyLong(ctx, response);
         }
       } catch (err) {
         console.error("[Telegram] Status handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
+    });
+
+    // Handle /model command
+    this.bot.command("model", async (ctx) => {
+      if (!this.modelHandler) {
+        await ctx.reply("No model handler configured.");
+        return;
+      }
+
+      const text = ctx.message?.text ?? "";
+      const args = text.split(" ").slice(1).join(" ").trim();
+
+      try {
+        const response = await this.modelHandler(ctx, args);
+        if (response) {
+          await this.replyLong(ctx, response);
+        }
+      } catch (err) {
+        console.error("[Telegram] Model handler error:", err);
         await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
       }
     });
@@ -143,7 +167,7 @@ export class TelegramBot {
       try {
         const response = await this.messageHandler(text, ctx);
         if (response) {
-          await ctx.reply(response);
+          await this.replyLong(ctx, response);
         }
       } catch (err) {
         console.error("[Telegram] Handler error:", err);
@@ -158,6 +182,10 @@ export class TelegramBot {
 
   onStatus(handler: StatusHandler): void {
     this.statusHandler = handler;
+  }
+
+  onModel(handler: ModelHandler): void {
+    this.modelHandler = handler;
   }
 
   async sendMessage(text: string): Promise<void> {
@@ -221,6 +249,44 @@ export class TelegramBot {
   async replyToolOutput(ctx: Context, toolName: string, result: unknown): Promise<void> {
     const html = formatToolOutput(toolName, result);
     await ctx.reply(html, { parse_mode: "HTML" });
+  }
+
+  /**
+   * Split a long message into chunks and send each separately.
+   * Telegram has a 4096 character limit per message.
+   */
+  async sendMessageLong(text: string): Promise<void> {
+    if (!config.telegram.allowedUserId) {
+      console.warn("[Telegram] No allowed user ID configured, cannot send message");
+      return;
+    }
+
+    const maxLength = 4000;
+    const chunks: string[] = [];
+
+    for (let i = 0; i < text.length; i += maxLength) {
+      chunks.push(text.slice(i, i + maxLength));
+    }
+
+    for (const chunk of chunks) {
+      await this.bot.api.sendMessage(config.telegram.allowedUserId, chunk);
+    }
+  }
+
+  /**
+   * Split a long message into chunks and reply to the context.
+   */
+  async replyLong(ctx: Context, text: string): Promise<void> {
+    const maxLength = 4000;
+    const chunks: string[] = [];
+
+    for (let i = 0; i < text.length; i += maxLength) {
+      chunks.push(text.slice(i, i + maxLength));
+    }
+
+    for (const chunk of chunks) {
+      await ctx.reply(chunk);
+    }
   }
 
   async start(): Promise<void> {

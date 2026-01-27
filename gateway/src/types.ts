@@ -3,7 +3,9 @@ export type PiCommand =
   | { type: "prompt"; message: string; id?: string }
   | { type: "abort"; id?: string }
   | { type: "get_state"; id?: string }
-  | { type: "get_messages"; id?: string };
+  | { type: "get_messages"; id?: string }
+  | { type: "get_available_models"; id?: string }
+  | { type: "set_model"; provider: string; modelId: string; id?: string };
 
 // Pi RPC Response (received from Pi via stdout)
 export interface PiResponse {
@@ -13,6 +15,21 @@ export interface PiResponse {
   success: boolean;
   error?: string;
   data?: unknown;
+}
+
+// Pi State from get_state response
+export interface PiState {
+  model: { provider: string; id: string } | null;
+  thinkingLevel: string;
+  isStreaming: boolean;
+  isCompacting: boolean;
+  steeringMode: string;
+  followUpMode: string;
+  sessionFile: string;
+  sessionId: string;
+  autoCompactionEnabled: boolean;
+  messageCount: number;
+  pendingMessageCount: number;
 }
 
 // Pi RPC Event Types (streamed from Pi)

@@ -1,10 +1,8 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
 
-// Debug: check if env vars loaded
-console.log("[Debug] TELEGRAM_BOT_TOKEN:", config.telegram.token ? `${config.telegram.token.slice(0, 10)}...` : "NOT SET");
 import { PiRpcClient } from "./pi-rpc.js";
 import { TelegramBot } from "./telegram.js";
-import type { PiEvent } from "./types.js";
+import type { PiEvent, PiState } from "./types.js";
 
 function extractCommandFromUnknown(value: unknown): string | null {
   if (typeof value !== "object" || value === null) {
@@ -91,10 +89,12 @@ async function main(): Promise<void> {
         }
       }
 
-      if (event.toolName === "bash") {
-        const command = extractCommandFromEvent(event);
-        if (command) {
-          toolLabel = `$ ${command}`;
+      if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+        if (event.toolName === "bash") {
+          const command = extractCommandFromEvent(event);
+          if (command) {
+            toolLabel = `$ ${command}`;
+          }
         }
       }
     };
@@ -127,11 +127,85 @@ async function main(): Promise<void> {
   // Wire up /status command
   telegram.onStatus(async (_ctx) => {
     const state = await pi.getState();
-    const model = (state.data as { model?: unknown } | undefined)?.model ?? null;
-    if (!model) {
-      return "Current model: (none)";
+    const stateData = state.data as PiState;
+    const activeModel = stateData?.model;
+
+    const lines = [
+      `Current model: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "(unknown)"}`,
+      `Session: ${config.pi.sessionPath}`,
+      `Running: ${pi.isRunning ? "yes" : "no"}`,
+    ];
+
+    return lines.join("\n");
+  });
+
+  // Wire up /model command
+  telegram.onModel(async (_ctx, args) => {
+    const arg = args.trim();
+
+    if (!arg || arg === "") {
+      const state = await pi.getState();
+      const stateData = state.data as PiState;
+      const activeModel = stateData?.model;
+
+      return [
+        `Current model: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "(unknown)"}`,
+        "",
+        "Usage:",
+        "/model                    Show current model",
+        "/model list               List available models",
+        "/model <number>           Switch to model",
+      ].join("\n");
     }
-    return `Current model:\\n${JSON.stringify(model, null, 2)}`;
+
+    if (arg === "list") {
+      const response = await pi.getAvailableModels();
+      if (!response.success || !response.data) {
+        return "Failed to get available models.";
+      }
+
+      const data = response.data as { models: Array<{ provider: string; id: string; name: string }> };
+      const models = data.models ?? [];
+
+      const state = await pi.getState();
+      const stateData = state.data as PiState;
+      const currentModel = stateData?.model;
+
+      const lines = models.map((m, i) => {
+        const prefix = currentModel?.provider === m.provider && currentModel?.id === m.id ? "> " : "  ";
+        return `${prefix}${i + 1}. ${m.provider}/${m.id} (${m.name})`;
+      });
+
+      return ["Available models:", ...lines].join("\n");
+    }
+
+    const index = parseInt(arg, 10);
+    if (isNaN(index) || index < 1) {
+      return "Invalid number. Use /model list to see available models.";
+    }
+
+    const response = await pi.getAvailableModels();
+    if (!response.success || !response.data) {
+      return "Failed to get available models.";
+    }
+
+    const data = response.data as { models: Array<{ provider: string; id: string; name: string }> };
+    const models = data.models ?? [];
+
+    if (index > models.length) {
+      return `Model ${index} not found. Use /model list to see available models (1-${models.length}).`;
+    }
+
+    const selected = models[index - 1];
+
+    try {
+      await pi.setModelViaRpc(selected.provider, selected.id);
+      return `Model changed to ${selected.provider}/${selected.id} (${selected.name})`;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[Gateway] Failed to set model:", err);
+      return `Failed to set model: ${errorMsg}`;
+    }
   });
 
   // Start Pi RPC
