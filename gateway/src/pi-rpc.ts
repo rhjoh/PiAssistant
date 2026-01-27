@@ -113,6 +113,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     });
   }
 
+  async getState(): Promise<PiResponse> {
+    return this.sendAndWait({ type: "get_state" });
+  }
+
   send(command: PiCommand): void {
     if (!this.process?.stdin) {
       throw new Error("Pi RPC not running");
@@ -144,5 +148,41 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     } catch (err) {
       console.error("[Pi RPC] Failed to parse:", line);
     }
+  }
+
+  private async sendAndWait(command: PiCommand): Promise<PiResponse> {
+    if (!this.isRunning) {
+      throw new Error("Pi RPC not running");
+    }
+
+    const id = `cmd-${++this.requestId}`;
+    const withId = { ...command, id };
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        this.off("response", onResponse);
+        this.off("error", onError);
+      };
+
+      const onResponse = (response: PiResponse) => {
+        if (response.id !== id) return;
+        cleanup();
+        if (response.success) {
+          resolve(response);
+        } else {
+          reject(new Error(response.error ?? "Command failed"));
+        }
+      };
+
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+
+      this.on("response", onResponse);
+      this.on("error", onError);
+
+      this.send(withId);
+    });
   }
 }

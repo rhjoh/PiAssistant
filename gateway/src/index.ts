@@ -124,6 +124,16 @@ async function main(): Promise<void> {
     }
   });
 
+  // Wire up /status command
+  telegram.onStatus(async (_ctx) => {
+    const state = await pi.getState();
+    const model = (state.data as { model?: unknown } | undefined)?.model ?? null;
+    if (!model) {
+      return "Current model: (none)";
+    }
+    return `Current model:\\n${JSON.stringify(model, null, 2)}`;
+  });
+
   // Start Pi RPC
   console.log("[Gateway] Starting Pi RPC...");
   await pi.start();

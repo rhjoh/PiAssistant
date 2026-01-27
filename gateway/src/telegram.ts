@@ -84,9 +84,12 @@ export type MessageHandler = (
   ctx: Context
 ) => Promise<string | void>;
 
+export type StatusHandler = (ctx: Context) => Promise<string | void>;
+
 export class TelegramBot {
   private bot: Bot;
   private messageHandler: MessageHandler | null = null;
+  private statusHandler: StatusHandler | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
@@ -102,6 +105,24 @@ export class TelegramBot {
     // Handle /takeover command (for Phase 2)
     this.bot.command("takeover", async (ctx) => {
       await ctx.reply("Takeover command received. (Not yet implemented)");
+    });
+
+    // Handle /status command
+    this.bot.command("status", async (ctx) => {
+      if (!this.statusHandler) {
+        await ctx.reply("No status handler configured.");
+        return;
+      }
+
+      try {
+        const response = await this.statusHandler(ctx);
+        if (response) {
+          await ctx.reply(response);
+        }
+      } catch (err) {
+        console.error("[Telegram] Status handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
     });
 
     // Handle all text messages
@@ -133,6 +154,10 @@ export class TelegramBot {
 
   onMessage(handler: MessageHandler): void {
     this.messageHandler = handler;
+  }
+
+  onStatus(handler: StatusHandler): void {
+    this.statusHandler = handler;
   }
 
   async sendMessage(text: string): Promise<void> {
