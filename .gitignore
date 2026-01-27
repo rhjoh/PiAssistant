@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+
+node_modules/
+dist/
+
+docs/feature_roadmap.md
+sessions/
+working_dir/
+tmp/
+
+.claude
+AGENTS.md
