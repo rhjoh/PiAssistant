@@ -1,35 +1,9 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
 
 import { handleStatus, handleModel } from "./commands.js";
+import { handlePrompt } from "./prompt-handler.js";
 import { PiRpcClient } from "./pi-rpc.js";
 import { TelegramBot } from "./telegram.js";
-import type { PiEvent } from "./types.js";
-
-function extractCommandFromUnknown(value: unknown): string | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-  const asRecord = value as Record<string, unknown>;
-  const command = asRecord.command;
-  return typeof command === "string" && command.length > 0 ? command : null;
-}
-
-function extractCommandFromEvent(event: PiEvent): string | null {
-  if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") {
-    return null;
-  }
-
-  const direct = extractCommandFromUnknown(event as unknown);
-  if (direct) return direct;
-
-  const fromResult = "result" in event ? extractCommandFromUnknown((event as Record<string, unknown>).result) : null;
-  if (fromResult) return fromResult;
-
-  const args = "args" in event ? extractCommandFromUnknown((event as Record<string, unknown>).args) : null;
-  if (args) return args;
-
-  return null;
-}
 
 async function main(): Promise<void> {
   // Validate environment
@@ -49,7 +23,6 @@ async function main(): Promise<void> {
     }
   });
 
-  // Log tool results (raw JSONL not useful to show in Telegram)
   pi.on("toolResult", (toolName, _result) => {
     console.log(`[Pi] Tool completed: ${toolName}`);
   });
@@ -64,184 +37,10 @@ async function main(): Promise<void> {
 
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
-    console.log(`\n[Telegram] Received: ${text}`);
-
     if (!pi.isRunning) {
       return "Pi is not running. Starting...";
     }
-
-    // Track tool execution messages for this prompt (single placeholder)
-    let toolLabel = "tool";
-    let toolMessageId: number | null = null;
-
-    // Streaming state
-    let responseMessageId: number | null = null;
-    let sendingInitialMessage = false;
-    let lastEditTime = 0;
-    let lastEditedText = "";
-    let pendingEdit: NodeJS.Timeout | null = null;
-    const EDIT_THROTTLE_MS = 500;
-
-    const onPiEvent = (event: PiEvent) => {
-      if (event.type === "tool_execution_start") {
-        if (toolMessageId === null) {
-          toolLabel = event.toolName || "tool";
-          void telegram
-            .replyToolStart(ctx, toolLabel)
-            .then((messageId) => {
-              toolMessageId = messageId;
-            })
-            .catch((err) => {
-              console.error("[Telegram] Failed to send tool start message:", err);
-            });
-        }
-      }
-
-      if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
-        if (event.toolName === "bash") {
-          const command = extractCommandFromEvent(event);
-          if (command) {
-            toolLabel = `$ ${command}`;
-          }
-        }
-      }
-    };
-
-    const onText = (currentText: string) => {
-      const trimmed = currentText.trim();
-      if (!trimmed) return;
-
-      // First text - send initial message
-      if (responseMessageId === null && !sendingInitialMessage) {
-        sendingInitialMessage = true;
-        void ctx
-          .reply(trimmed)
-          .then((msg) => {
-            responseMessageId = msg.message_id;
-            lastEditedText = trimmed;
-            lastEditTime = Date.now();
-          })
-          .catch((err) => {
-            console.error("[Telegram] Failed to send initial streaming message:", err);
-            sendingInitialMessage = false; // Allow retry on failure
-          });
-        return;
-      }
-
-      // Still waiting for initial message to be sent
-      if (responseMessageId === null) {
-        return;
-      }
-
-      // Subsequent text - throttled edit
-      const now = Date.now();
-      const timeSinceLastEdit = now - lastEditTime;
-
-      // Clear any pending edit
-      if (pendingEdit) {
-        clearTimeout(pendingEdit);
-        pendingEdit = null;
-      }
-
-      const doEdit = () => {
-        if (trimmed === lastEditedText) return; // No change
-        if (responseMessageId === null) return;
-
-        // Truncate for Telegram limit
-        const textToSend = trimmed.length > 4000 ? trimmed.slice(0, 4000) + "..." : trimmed;
-
-        void ctx.api
-          .editMessageText(ctx.chat!.id, responseMessageId, textToSend)
-          .then(() => {
-            lastEditedText = trimmed;
-            lastEditTime = Date.now();
-          })
-          .catch((err) => {
-            // Ignore "message is not modified" errors
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (!errMsg.includes("message is not modified")) {
-              console.error("[Telegram] Failed to edit streaming message:", err);
-            }
-          });
-      };
-
-      if (timeSinceLastEdit >= EDIT_THROTTLE_MS) {
-        doEdit();
-      } else {
-        // Schedule edit for later
-        pendingEdit = setTimeout(doEdit, EDIT_THROTTLE_MS - timeSinceLastEdit);
-      }
-    };
-
-    pi.on("event", onPiEvent);
-    pi.on("text", onText);
-
-    // Send typing indicator
-    await ctx.replyWithChatAction("typing");
-
-    try {
-      // Forward to Pi and wait for response
-      const response = await pi.prompt(text);
-      console.log(`[Pi] Response: ${response.slice(0, 100)}...`);
-
-      // Clear any pending edit
-      if (pendingEdit) {
-        clearTimeout(pendingEdit);
-        pendingEdit = null;
-      }
-
-      // Final edit with complete response
-      const trimmedResponse = response.trim();
-      if (responseMessageId !== null && trimmedResponse && trimmedResponse !== lastEditedText) {
-        // Handle long responses - if > 4096, we need to send additional messages
-        if (trimmedResponse.length <= 4000) {
-          try {
-            await ctx.api.editMessageText(ctx.chat!.id, responseMessageId, trimmedResponse);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (!errMsg.includes("message is not modified")) {
-              console.error("[Telegram] Failed to edit final message:", err);
-            }
-          }
-        } else {
-          // Edit first message with truncated content, send rest as new messages
-          const firstChunk = trimmedResponse.slice(0, 4000);
-          try {
-            await ctx.api.editMessageText(ctx.chat!.id, responseMessageId, firstChunk);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (!errMsg.includes("message is not modified")) {
-              console.error("[Telegram] Failed to edit final message:", err);
-            }
-          }
-          // Send remaining chunks
-          const remaining = trimmedResponse.slice(4000);
-          await telegram.replyLong(ctx, remaining);
-        }
-      } else if (responseMessageId === null && trimmedResponse) {
-        // No streaming happened (very fast response), send normally
-        await telegram.replyLong(ctx, trimmedResponse);
-      }
-
-      // Update tool message to show completion (remove "Running..." status)
-      if (toolMessageId !== null) {
-        try {
-          await ctx.api.editMessageText(ctx.chat!.id, toolMessageId, `✓ ${toolLabel}`);
-        } catch {
-          // Ignore errors updating tool status
-        }
-      }
-
-      // Return undefined so telegram.ts doesn't send a duplicate
-      return;
-    } finally {
-      // Clean up listeners even if prompt fails
-      pi.off("event", onPiEvent);
-      pi.off("text", onText);
-      if (pendingEdit) {
-        clearTimeout(pendingEdit);
-      }
-    }
+    await handlePrompt(text, ctx, pi, telegram);
   });
 
   // Wire up /status command
