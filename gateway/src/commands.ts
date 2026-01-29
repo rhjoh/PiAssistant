@@ -1,0 +1,89 @@
+import type { PiRpcClient } from "./pi-rpc.js";
+import type { PiState } from "./types.js";
+
+// Handle /status command - show current Pi state
+export async function handleStatus(pi: PiRpcClient, sessionPath: string): Promise<string> {
+  const state = await pi.getState();
+  const stateData = state.data as PiState;
+  const activeModel = stateData?.model;
+
+  const lines = [
+    `Current model: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "(unknown)"}`,
+    `Session: ${sessionPath}`,
+    `Running: ${pi.isRunning ? "yes" : "no"}`,
+  ];
+
+  return lines.join("\n");
+}
+
+// Handle /model command - view or change model
+export async function handleModel(pi: PiRpcClient, args: string): Promise<string> {
+  const arg = args.trim();
+
+  // No args - show current model and usage
+  if (!arg || arg === "") {
+    const state = await pi.getState();
+    const stateData = state.data as PiState;
+    const activeModel = stateData?.model;
+
+    return [
+      `Current model: ${activeModel ? `${activeModel.provider}/${activeModel.id}` : "(unknown)"}`,
+      "",
+      "Usage:",
+      "/model                    Show current model",
+      "/model list               List available models",
+      "/model <number>           Switch to model",
+    ].join("\n");
+  }
+
+  // List available models
+  if (arg === "list") {
+    const response = await pi.getAvailableModels();
+    if (!response.success || !response.data) {
+      return "Failed to get available models.";
+    }
+
+    const data = response.data as { models: Array<{ provider: string; id: string; name: string }> };
+    const models = data.models ?? [];
+
+    const state = await pi.getState();
+    const stateData = state.data as PiState;
+    const currentModel = stateData?.model;
+
+    const lines = models.map((m, i) => {
+      const prefix = currentModel?.provider === m.provider && currentModel?.id === m.id ? "> " : "  ";
+      return `${prefix}${i + 1}. ${m.provider}/${m.id} (${m.name})`;
+    });
+
+    return ["Available models:", ...lines].join("\n");
+  }
+
+  // Switch to model by number
+  const index = parseInt(arg, 10);
+  if (isNaN(index) || index < 1) {
+    return "Invalid number. Use /model list to see available models.";
+  }
+
+  const response = await pi.getAvailableModels();
+  if (!response.success || !response.data) {
+    return "Failed to get available models.";
+  }
+
+  const data = response.data as { models: Array<{ provider: string; id: string; name: string }> };
+  const models = data.models ?? [];
+
+  if (index > models.length) {
+    return `Model ${index} not found. Use /model list to see available models (1-${models.length}).`;
+  }
+
+  const selected = models[index - 1];
+
+  try {
+    await pi.setModelViaRpc(selected.provider, selected.id);
+    return `Model changed to ${selected.provider}/${selected.id} (${selected.name})`;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : "Unknown error";
+    console.error("[Gateway] Failed to set model:", err);
+    return `Failed to set model: ${errorMsg}`;
+  }
+}
