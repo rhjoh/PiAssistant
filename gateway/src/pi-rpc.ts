@@ -144,6 +144,24 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     console.log(`[Pi RPC] Model set to ${provider}/${modelId}`);
   }
 
+  /**
+   * Get session statistics (tokens, cost, message counts)
+   */
+  async getSessionStats(): Promise<PiResponse> {
+    return this.sendAndWait({ type: "get_session_stats" });
+  }
+
+  /**
+   * Start a new session, optionally tracking the parent session
+   */
+  async newSession(parentSession?: string): Promise<PiResponse> {
+    const command: { type: "new_session"; parentSession?: string } = { type: "new_session" };
+    if (parentSession) {
+      command.parentSession = parentSession;
+    }
+    return this.sendAndWait(command);
+  }
+
   send(command: PiCommand): void {
     if (!this.process?.stdin) {
       throw new Error("Pi RPC not running");

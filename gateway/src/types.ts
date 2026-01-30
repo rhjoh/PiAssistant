@@ -4,8 +4,10 @@ export type PiCommand =
   | { type: "abort"; id?: string }
   | { type: "get_state"; id?: string }
   | { type: "get_messages"; id?: string }
+  | { type: "get_session_stats"; id?: string }
   | { type: "get_available_models"; id?: string }
-  | { type: "set_model"; provider: string; modelId: string; id?: string };
+  | { type: "set_model"; provider: string; modelId: string; id?: string }
+  | { type: "new_session"; parentSession?: string; id?: string };
 
 // Pi RPC Response (received from Pi via stdout)
 export interface PiResponse {
@@ -38,7 +40,16 @@ export type PiEvent =
   | { type: "tool_execution_start"; toolName: string }
   | { type: "tool_execution_end"; toolName: string; result: unknown }
   | { type: "agent_end" }
-  | { type: "response"; id?: string; command: string; success: boolean };
+  | { type: "response"; id?: string; command: string; success: boolean }
+  | { type: "auto_compaction_start"; reason: "threshold" | "overflow" }
+  | { type: "auto_compaction_end"; result: CompactionResult | null; aborted: boolean; willRetry: boolean };
+
+export interface CompactionResult {
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  details?: unknown;
+}
 
 export type AssistantMessageEvent =
   | { type: "text_delta"; delta: string }

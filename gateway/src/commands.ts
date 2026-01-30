@@ -1,4 +1,5 @@
 import type { PiRpcClient } from "./pi-rpc.js";
+import type { SessionManager } from "./session-manager.js";
 import type { PiState } from "./types.js";
 
 // Handle /status command - show current Pi state
@@ -86,4 +87,61 @@ export async function handleModel(pi: PiRpcClient, args: string): Promise<string
     console.error("[Gateway] Failed to set model:", err);
     return `Failed to set model: ${errorMsg}`;
   }
+}
+
+// Handle /session command - show session info and stats
+export async function handleSession(sessionManager: SessionManager): Promise<string> {
+  const info = await sessionManager.getSessionInfo();
+  const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
+  
+  const lines = [
+    `📁 Session: ${info.sessionPath}`,
+    `📦 Archive: ${info.archiveDir}`,
+    `🔄 Compactions: ${info.compactionCount}`,
+  ];
+
+  if (info.context) {
+    lines.push(
+      ``,
+      `🧠 Context:`,
+      `   Model: ${info.context.model}`,
+      `   Window: ${fmt(info.context.contextWindow)} tokens`,
+      `   Compacts at: ${fmt(info.context.compactThreshold)} tokens`
+    );
+  }
+
+  if (info.stats) {
+    lines.push(
+      ``,
+      `📊 Cumulative stats:`,
+      `   Messages: ${info.stats.messageCount}`,
+      `   Tokens: ↑${fmt(info.stats.tokens.input)} ↓${fmt(info.stats.tokens.output)} (${fmt(info.stats.tokens.total)} total)`,
+      `   Cost: $${info.stats.cost.toFixed(3)}`
+    );
+  }
+
+  lines.push(
+    ``,
+    `ℹ️ Current context size not available via RPC`,
+    `Use /new to archive and start fresh session`
+  );
+
+  return lines.join("\n");
+}
+
+// Handle /new command - archive current session and start fresh
+export async function handleNew(sessionManager: SessionManager): Promise<string> {
+  const result = await sessionManager.archiveAndStartNew();
+
+  if (result.error) {
+    return `❌ Failed to start new session: ${result.error}`;
+  }
+
+  const lines = [
+    `✅ New session started`,
+    ``,
+    `Archived: ${result.archived}`,
+  ];
+
+  return lines.join("\n");
 }

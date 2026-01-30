@@ -88,11 +88,17 @@ export type StatusHandler = (ctx: Context) => Promise<string | void>;
 
 export type ModelHandler = (ctx: Context, args: string) => Promise<string | void>;
 
+export type SessionHandler = (ctx: Context) => Promise<string | void>;
+
+export type NewSessionHandler = (ctx: Context) => Promise<string | void>;
+
 export class TelegramBot {
   private bot: Bot;
   private messageHandler: MessageHandler | null = null;
   private statusHandler: StatusHandler | null = null;
   private modelHandler: ModelHandler | null = null;
+  private sessionHandler: SessionHandler | null = null;
+  private newSessionHandler: NewSessionHandler | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
@@ -149,6 +155,42 @@ export class TelegramBot {
       }
     });
 
+    // Handle /session command
+    this.bot.command("session", async (ctx) => {
+      if (!this.sessionHandler) {
+        await ctx.reply("No session handler configured.");
+        return;
+      }
+
+      try {
+        const response = await this.sessionHandler(ctx);
+        if (response) {
+          await this.replyLong(ctx, response);
+        }
+      } catch (err) {
+        console.error("[Telegram] Session handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
+    });
+
+    // Handle /new command
+    this.bot.command("new", async (ctx) => {
+      if (!this.newSessionHandler) {
+        await ctx.reply("No new session handler configured.");
+        return;
+      }
+
+      try {
+        const response = await this.newSessionHandler(ctx);
+        if (response) {
+          await this.replyLong(ctx, response);
+        }
+      } catch (err) {
+        console.error("[Telegram] New session handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
+    });
+
     // Handle all text messages
     this.bot.on("message:text", async (ctx) => {
       // Security: only respond to whitelisted user
@@ -186,6 +228,14 @@ export class TelegramBot {
 
   onModel(handler: ModelHandler): void {
     this.modelHandler = handler;
+  }
+
+  onSession(handler: SessionHandler): void {
+    this.sessionHandler = handler;
+  }
+
+  onNewSession(handler: NewSessionHandler): void {
+    this.newSessionHandler = handler;
   }
 
   async sendMessage(text: string): Promise<void> {

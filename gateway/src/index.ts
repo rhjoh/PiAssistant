@@ -1,8 +1,9 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
 
-import { handleStatus, handleModel } from "./commands.js";
+import { handleStatus, handleModel, handleSession, handleNew } from "./commands.js";
 import { handlePrompt } from "./prompt-handler.js";
 import { PiRpcClient } from "./pi-rpc.js";
+import { SessionManager } from "./session-manager.js";
 import { TelegramBot } from "./telegram.js";
 
 async function main(): Promise<void> {
@@ -14,6 +15,7 @@ async function main(): Promise<void> {
 
   // Initialize components
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);
+  const sessionManager = new SessionManager(pi, { sessionPath: config.pi.sessionPath });
   const telegram = new TelegramBot();
 
   // Wire up Pi events for logging
@@ -35,6 +37,9 @@ async function main(): Promise<void> {
     console.error("[Pi] Error:", err);
   });
 
+  // Set up session management (archival on compaction)
+  sessionManager.setupEventHandlers();
+
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
     if (!pi.isRunning) {
@@ -48,6 +53,12 @@ async function main(): Promise<void> {
 
   // Wire up /model command
   telegram.onModel(async (_ctx, args) => handleModel(pi, args));
+
+  // Wire up /session command
+  telegram.onSession(async () => handleSession(sessionManager));
+
+  // Wire up /new command
+  telegram.onNewSession(async () => handleNew(sessionManager));
 
   // Start Pi RPC
   console.log("[Gateway] Starting Pi RPC...");
