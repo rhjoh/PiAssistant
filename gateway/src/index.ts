@@ -15,8 +15,26 @@ async function main(): Promise<void> {
 
   // Initialize components
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);
-  const sessionManager = new SessionManager(pi, { sessionPath: config.pi.sessionPath });
   const telegram = new TelegramBot();
+  
+  // Initialize session manager with archive notification
+  const sessionManager = new SessionManager(pi, { 
+    sessionPath: config.pi.sessionPath,
+    onArchive: (archivePath, reason) => {
+      const reasonText = reason === "compaction" ? "Context threshold reached" : "Manual rotation";
+      const message = [
+        `🔄 Session archived`,
+        ``,
+        `Reason: ${reasonText}`,
+        `Archived: ${archivePath}`,
+        reason === "compaction" ? `New session started automatically` : ``,
+      ].filter(Boolean).join("\n");
+      
+      telegram.sendMessage(message).catch((err) => {
+        console.error("[Gateway] Failed to send archive notification:", err);
+      });
+    }
+  });
 
   // Wire up Pi events for logging
   pi.on("event", (event) => {

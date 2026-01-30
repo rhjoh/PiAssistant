@@ -6,16 +6,19 @@ import type { PiRpcClient } from "./pi-rpc.js";
 export interface SessionManagerOptions {
   sessionPath: string;
   archiveDir?: string;
+  onArchive?: (archivePath: string, reason: "manual" | "compaction") => void;
 }
 
 export class SessionManager {
   private sessionPath: string;
   private archiveDir: string;
   private compactionCount = 0;
+  private onArchive?: (archivePath: string, reason: "manual" | "compaction") => void;
 
   constructor(private pi: PiRpcClient, options: SessionManagerOptions) {
     this.sessionPath = options.sessionPath;
     this.archiveDir = options.archiveDir ?? join(dirname(options.sessionPath), "archived");
+    this.onArchive = options.onArchive;
   }
 
   /**
@@ -64,6 +67,9 @@ export class SessionManager {
       await copyFile(this.sessionPath, archivePath);
       console.log(`[SessionManager] Archived session to: ${archivePath}`);
 
+      // Notify if callback configured
+      this.onArchive?.(archivePath, "compaction");
+
       return archivePath;
     } catch (err) {
       console.error(`[SessionManager] Failed to archive session:`, err);
@@ -105,6 +111,9 @@ export class SessionManager {
       // Copy session file before starting new session
       await copyFile(this.sessionPath, archivePath);
       console.log(`[SessionManager] Archived session to: ${archivePath}`);
+
+      // Notify if callback configured
+      this.onArchive?.(archivePath, "manual");
 
       // Tell Pi to start a new session
       const response = await this.pi.newSession(archivePath);
