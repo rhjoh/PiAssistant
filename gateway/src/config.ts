@@ -20,6 +20,11 @@ export const config = {
       join(homedir(), ".pi", "agent", "sessions", "main.jsonl"),
     cwd: process.env.PI_CWD ?? homedir(),
   },
+  heartbeat: {
+    intervalMs: process.env.HEARTBEAT_INTERVAL_MS
+      ? parseInt(process.env.HEARTBEAT_INTERVAL_MS, 10)
+      : 15 * 60 * 1000, // 15 minutes default
+  },
 };
 
 export function validateConfig(): void {

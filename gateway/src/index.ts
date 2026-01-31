@@ -5,6 +5,7 @@ import { handlePrompt } from "./prompt-handler.js";
 import { PiRpcClient } from "./pi-rpc.js";
 import { SessionManager } from "./session-manager.js";
 import { TelegramBot } from "./telegram.js";
+import { Heartbeat } from "./heartbeat.js";
 
 async function main(): Promise<void> {
   // Validate environment
@@ -83,6 +84,15 @@ async function main(): Promise<void> {
   await pi.start();
   console.log("[Gateway] Pi RPC ready");
 
+  // Start heartbeat (proactive agent check-ins)
+  const heartbeat = new Heartbeat(pi, (response) => {
+    // Agent has something proactive to say - send to Telegram
+    telegram.sendMessage(response).catch((err) => {
+      console.error("[Gateway] Failed to send heartbeat response:", err);
+    });
+  }, config.pi.cwd, { intervalMs: config.heartbeat.intervalMs });
+  heartbeat.start();
+
   // Start Telegram bot
   console.log("[Gateway] Starting Telegram bot...");
   await telegram.start();
@@ -90,6 +100,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = () => {
     console.log("\n[Gateway] Shutting down...");
+    heartbeat.stop();
     telegram.stop();
     pi.stop();
     process.exit(0);
