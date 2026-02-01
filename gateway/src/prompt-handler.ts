@@ -4,7 +4,7 @@ import type { TelegramBot } from "./telegram.js";
 import type { PiEvent } from "./types.js";
 import { escapeHtml } from "./telegram.js";
 
-const EDIT_THROTTLE_MS = 500;
+const EDIT_THROTTLE_MS = 1000; // 1 second between edits to avoid Telegram rate limits
 
 /**
  * Strip markdown code fences from text (```language ... ```)
@@ -143,12 +143,21 @@ export async function handlePrompt(
           lastEditedText = trimmed;
           lastEditTime = Date.now();
         })
-        .catch((err) => {
-          // Ignore "message is not modified" errors
+        .catch((err: unknown) => {
           const errMsg = err instanceof Error ? err.message : String(err);
-          if (!errMsg.includes("message is not modified")) {
-            console.error("[Telegram] Failed to edit streaming message:", err);
+          // Ignore "message is not modified" errors
+          if (errMsg.includes("message is not modified")) return;
+          
+          // Handle rate limit - retry after delay
+          const errObj = err as { parameters?: { retry_after?: number } };
+          if (errObj.parameters?.retry_after) {
+            const retryMs = errObj.parameters.retry_after * 1000 + 100;
+            console.log(`[Telegram] Rate limited, retrying in ${retryMs}ms`);
+            setTimeout(doEdit, retryMs);
+            return;
           }
+          
+          console.error("[Telegram] Failed to edit streaming message:", err);
         });
     };
 

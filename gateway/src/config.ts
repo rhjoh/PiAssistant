@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 
 // Load .env before reading any env vars
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, "..", "..");
 dotenvConfig({ path: join(__dirname, "..", ".env") });
 
 export const config = {
@@ -24,6 +25,27 @@ export const config = {
     intervalMs: process.env.HEARTBEAT_INTERVAL_MS
       ? parseInt(process.env.HEARTBEAT_INTERVAL_MS, 10)
       : 15 * 60 * 1000, // 15 minutes default
+  },
+  memory: {
+    enabled: process.env.MEMORY_ENABLED
+      ? process.env.MEMORY_ENABLED === "true"
+      : true,
+    model: process.env.MEMORY_MODEL ?? "glm-4.7",
+    sessionDir: process.env.MEMORY_SESSION_DIR ?? join(projectRoot, "sessions"),
+    outputDir: process.env.MEMORY_OUTPUT_DIR ?? join(projectRoot, "working_dir"),
+    statePath:
+      process.env.MEMORY_STATE_PATH ??
+      join(projectRoot, "working_dir", "memory-watcher-state.json"),
+    intervalMs: process.env.MEMORY_SCAN_INTERVAL_MS
+      ? parseInt(process.env.MEMORY_SCAN_INTERVAL_MS, 10)
+      : 10 * 60 * 1000, // 10 minutes default
+    activeWindowMs: process.env.MEMORY_ACTIVE_WINDOW_MINUTES
+      ? parseInt(process.env.MEMORY_ACTIVE_WINDOW_MINUTES, 10) * 60 * 1000
+      : 60 * 60 * 1000, // 60 minutes default
+    memoryPromptPath: process.env.MEMORY_PROMPT_PATH
+      ?? join(projectRoot, "working_dir", "memory-prompt.md"),
+    yesterdayPromptPath: process.env.MEMORY_YESTERDAY_PROMPT_PATH
+      ?? join(projectRoot, "working_dir", "yesterday-prompt.md"),
   },
 };
 

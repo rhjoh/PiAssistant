@@ -6,8 +6,23 @@ import { PiRpcClient } from "./pi-rpc.js";
 import { SessionManager } from "./session-manager.js";
 import { TelegramBot } from "./telegram.js";
 import { Heartbeat } from "./heartbeat.js";
+import { MemoryWatcher } from "./memory-watcher.js";
+
+// Add timestamps to all console output
+function setupTimestampedLogging(): void {
+  const timestamp = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+  
+  const originalLog = console.log.bind(console);
+  const originalError = console.error.bind(console);
+  const originalWarn = console.warn.bind(console);
+  
+  console.log = (...args) => originalLog(`[${timestamp()}]`, ...args);
+  console.error = (...args) => originalError(`[${timestamp()}]`, ...args);
+  console.warn = (...args) => originalWarn(`[${timestamp()}]`, ...args);
+}
 
 async function main(): Promise<void> {
+  setupTimestampedLogging();
   // Validate environment
   validateConfig();
 
@@ -93,6 +108,25 @@ async function main(): Promise<void> {
   }, config.pi.cwd, { intervalMs: config.heartbeat.intervalMs });
   heartbeat.start();
 
+  // Start memory watcher
+  const memoryWatcher = new MemoryWatcher({
+    sessionDir: config.memory.sessionDir,
+    outputDir: config.memory.outputDir,
+    statePath: config.memory.statePath,
+    model: config.memory.model,
+    intervalMs: config.memory.intervalMs,
+    activeWindowMs: config.memory.activeWindowMs,
+    memoryPromptPath: config.memory.memoryPromptPath,
+    yesterdayPromptPath: config.memory.yesterdayPromptPath,
+  });
+
+  if (config.memory.enabled) {
+    await memoryWatcher.start();
+    console.log(`[Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, model: ${config.memory.model})`);
+  } else {
+    console.log("[Gateway] Memory watcher disabled");
+  }
+
   // Start Telegram bot
   console.log("[Gateway] Starting Telegram bot...");
   await telegram.start();
@@ -100,6 +134,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = () => {
     console.log("\n[Gateway] Shutting down...");
+    memoryWatcher.stop();
     heartbeat.stop();
     telegram.stop();
     pi.stop();
