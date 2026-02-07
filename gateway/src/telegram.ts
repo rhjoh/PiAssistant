@@ -360,6 +360,18 @@ export class TelegramBot {
 
   async start(): Promise<void> {
     console.log("[Telegram] Starting bot...");
+
+    // Register commands with Telegram so they appear in the / menu
+    await this.bot.api.setMyCommands([
+      { command: "start", description: "Start the bot" },
+      { command: "status", description: "Show Pi status and current model" },
+      { command: "model", description: "View or change AI model" },
+      { command: "session", description: "Show session info and stats" },
+      { command: "new", description: "Archive session and start fresh" },
+      { command: "takeover", description: "Reclaim session from TUI" },
+    ]);
+    console.log("[Telegram] Commands registered");
+
     await this.bot.start({
       onStart: () => console.log("[Telegram] Bot started"),
     });
