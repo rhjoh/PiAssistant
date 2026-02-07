@@ -26,16 +26,20 @@ export const config = {
       ? parseInt(process.env.HEARTBEAT_INTERVAL_MS, 10)
       : 15 * 60 * 1000, // 15 minutes default
   },
+  tui: {
+    lockPath: process.env.TUI_LOCK_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), ".tui-session.lock"),
+  },
   memory: {
     enabled: process.env.MEMORY_ENABLED
       ? process.env.MEMORY_ENABLED === "true"
       : true,
     model: process.env.MEMORY_MODEL ?? "glm-4.7",
     sessionDir: process.env.MEMORY_SESSION_DIR ?? join(projectRoot, "sessions"),
-    outputDir: process.env.MEMORY_OUTPUT_DIR ?? join(projectRoot, "working_dir"),
-    statePath:
-      process.env.MEMORY_STATE_PATH ??
-      join(projectRoot, "working_dir", "memory-watcher-state.json"),
+    outputDir: process.env.MEMORY_OUTPUT_DIR
+      ?? (process.env.PI_CWD ?? homedir()),
+    statePath: process.env.MEMORY_STATE_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), ".memory-watcher-state.json"),
     intervalMs: process.env.MEMORY_SCAN_INTERVAL_MS
       ? parseInt(process.env.MEMORY_SCAN_INTERVAL_MS, 10)
       : 10 * 60 * 1000, // 10 minutes default
@@ -43,9 +47,9 @@ export const config = {
       ? parseInt(process.env.MEMORY_ACTIVE_WINDOW_MINUTES, 10) * 60 * 1000
       : 60 * 60 * 1000, // 60 minutes default
     memoryPromptPath: process.env.MEMORY_PROMPT_PATH
-      ?? join(projectRoot, "working_dir", "memory-prompt.md"),
+      ?? join(process.env.PI_CWD ?? homedir(), "memory-prompt.md"),
     yesterdayPromptPath: process.env.MEMORY_YESTERDAY_PROMPT_PATH
-      ?? join(projectRoot, "working_dir", "yesterday-prompt.md"),
+      ?? join(process.env.PI_CWD ?? homedir(), "yesterday-prompt.md"),
   },
 };
 

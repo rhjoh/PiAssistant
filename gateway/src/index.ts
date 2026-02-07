@@ -1,9 +1,10 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
 
-import { handleStatus, handleModel, handleSession, handleNew } from "./commands.js";
+import { handleStatus, handleModel, handleSession, handleNew, handleTakeover } from "./commands.js";
 import { handlePrompt } from "./prompt-handler.js";
 import { PiRpcClient } from "./pi-rpc.js";
 import { SessionManager } from "./session-manager.js";
+import { SessionWatcher } from "./session-watcher.js";
 import { TelegramBot } from "./telegram.js";
 import { Heartbeat } from "./heartbeat.js";
 import { MemoryWatcher } from "./memory-watcher.js";
@@ -74,11 +75,53 @@ async function main(): Promise<void> {
   // Set up session management (archival on compaction)
   sessionManager.setupEventHandlers();
 
+  // Session watcher (lock file-based TUI detection)
+  const sessionWatcher = new SessionWatcher(
+    config.pi.sessionPath,
+    config.tui.lockPath,
+  );
+
+  sessionWatcher.on(async (event) => {
+    if (event.type === "tui-detected") {
+      if (pi.isRunning) {
+        try { pi.abort(); } catch { /* ignore */ }
+        pi.stop();
+        console.log("[Gateway] Pi RPC stopped (TUI now owns session)");
+      }
+    } else if (event.type === "tui-gone") {
+      console.log("[Gateway] TUI closed, restarting Pi RPC...");
+      await pi.start();
+      console.log("[Gateway] Pi RPC ready");
+    }
+  });
+
+  // Check initial TUI status before starting Pi
+  const initialStatus = await sessionWatcher.checkStatus();
+  sessionWatcher.start();
+
+  if (initialStatus === "active") {
+    console.log("[Gateway] TUI active at startup — Pi RPC not started");
+  } else {
+    console.log("[Gateway] Starting Pi RPC...");
+    await pi.start();
+    console.log("[Gateway] Pi RPC ready");
+  }
+
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
-    if (!pi.isRunning) {
-      return "Pi is not running. Starting...";
+    console.log(`[Telegram] Incoming message: ${text.slice(0, 100)}`);
+
+    if (sessionWatcher.isTuiActive) {
+      console.log("[Gateway] TUI active — blocking Telegram message");
+      return "⚠️ TUI is active on this session. Send /takeover to reclaim.";
     }
+
+    if (!pi.isRunning) {
+      console.log("[Gateway] Pi RPC not running, starting...");
+      await pi.start();
+      console.log("[Gateway] Pi RPC ready");
+    }
+
     await handlePrompt(text, ctx, pi, telegram);
   });
 
@@ -94,10 +137,8 @@ async function main(): Promise<void> {
   // Wire up /new command
   telegram.onNewSession(async () => handleNew(sessionManager));
 
-  // Start Pi RPC
-  console.log("[Gateway] Starting Pi RPC...");
-  await pi.start();
-  console.log("[Gateway] Pi RPC ready");
+  // Wire up /takeover command
+  telegram.onTakeover(async () => handleTakeover(pi, sessionWatcher));
 
   // Start heartbeat (proactive agent check-ins)
   const heartbeat = new Heartbeat(pi, (response) => {
@@ -134,6 +175,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = () => {
     console.log("\n[Gateway] Shutting down...");
+    sessionWatcher.stop();
     memoryWatcher.stop();
     heartbeat.stop();
     telegram.stop();

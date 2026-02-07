@@ -115,12 +115,16 @@ export class SessionManager {
       // Notify if callback configured
       this.onArchive?.(archivePath, "manual");
 
-      // Tell Pi to start a new session
-      const response = await this.pi.newSession(archivePath);
-      
-      if (!response.success) {
-        return { archived: archivePath, error: response.error ?? "Failed to start new session" };
+      // Truncate session file, then tell Pi to switch back to it (loads fresh)
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(this.sessionPath, "");
+      console.log(`[SessionManager] Truncated session file: ${this.sessionPath}`);
+
+      const switchResponse = await this.pi.switchSession(this.sessionPath);
+      if (!switchResponse.success) {
+        return { archived: archivePath, error: switchResponse.error ?? "Failed to switch to fresh session" };
       }
+      console.log(`[SessionManager] Pi switched to fresh session`);
 
       // Reset compaction count for new session
       this.resetCompactionCount();

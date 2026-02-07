@@ -81,7 +81,7 @@ export class Heartbeat {
       // Strip backticks - agent sometimes wraps the marker in code formatting
       const trimmed = response.trim().replace(/^`+|`+$/g, "");
 
-      if (trimmed === NO_ACTION_MARKER) {
+      if (trimmed === NO_ACTION_MARKER || trimmed.includes(NO_ACTION_MARKER) || !trimmed) {
         console.log("[Heartbeat] No action needed");
         return;
       }

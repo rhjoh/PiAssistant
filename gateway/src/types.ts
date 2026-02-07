@@ -7,7 +7,8 @@ export type PiCommand =
   | { type: "get_session_stats"; id?: string }
   | { type: "get_available_models"; id?: string }
   | { type: "set_model"; provider: string; modelId: string; id?: string }
-  | { type: "new_session"; parentSession?: string; id?: string };
+  | { type: "new_session"; parentSession?: string; id?: string }
+  | { type: "switch_session"; sessionPath: string; id?: string };
 
 // Pi RPC Response (received from Pi via stdout)
 export interface PiResponse {

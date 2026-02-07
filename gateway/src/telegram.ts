@@ -91,6 +91,7 @@ export type ModelHandler = (ctx: Context, args: string) => Promise<string | void
 export type SessionHandler = (ctx: Context) => Promise<string | void>;
 
 export type NewSessionHandler = (ctx: Context) => Promise<string | void>;
+export type TakeoverHandler = (ctx: Context) => Promise<string | void>;
 
 export class TelegramBot {
   private bot: Bot;
@@ -99,6 +100,7 @@ export class TelegramBot {
   private modelHandler: ModelHandler | null = null;
   private sessionHandler: SessionHandler | null = null;
   private newSessionHandler: NewSessionHandler | null = null;
+  private takeoverHandler: TakeoverHandler | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
@@ -111,9 +113,21 @@ export class TelegramBot {
       await ctx.reply("Gateway connected. Send me a message to talk to Pi.");
     });
 
-    // Handle /takeover command (for Phase 2)
+    // Handle /takeover command
     this.bot.command("takeover", async (ctx) => {
-      await ctx.reply("Takeover command received. (Not yet implemented)");
+      if (!this.takeoverHandler) {
+        await ctx.reply("No takeover handler configured.");
+        return;
+      }
+      try {
+        const response = await this.takeoverHandler(ctx);
+        if (response) {
+          await this.replyLong(ctx, response);
+        }
+      } catch (err) {
+        console.error("[Telegram] Takeover handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
     });
 
     // Handle /status command
@@ -236,6 +250,10 @@ export class TelegramBot {
 
   onNewSession(handler: NewSessionHandler): void {
     this.newSessionHandler = handler;
+  }
+
+  onTakeover(handler: TakeoverHandler): void {
+    this.takeoverHandler = handler;
   }
 
   async sendMessage(text: string): Promise<void> {

@@ -30,6 +30,22 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     return this.process !== null && this.process.exitCode === null;
   }
 
+  get pid(): number | null {
+    return this.process?.pid ?? null;
+  }
+
+  async reload(): Promise<void> {
+    console.log("[PiRpc] Reloading...");
+    this.stop();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await this.start();
+    console.log("[PiRpc] Reload complete");
+  }
+
+  async switchSession(sessionPath: string): Promise<PiResponse> {
+    return this.sendAndWait({ type: "switch_session", sessionPath });
+  }
+
   async start(): Promise<void> {
     if (this.isRunning) {
       return;
