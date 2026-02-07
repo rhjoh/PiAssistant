@@ -290,7 +290,8 @@ export class TelegramBot {
    * Sends a "tool running" message and returns the Telegram message id.
    */
   async replyToolStart(ctx: Context, toolName: string): Promise<number> {
-    const html = `Running <b>${escapeHtml(toolName)}</b>...`;
+    // Intentionally keep the command in regular text; actual stdout/stderr is shown in <pre> on completion.
+    const html = `Running ${escapeHtml(toolName)}...`;
     const msg = await ctx.reply(html, { parse_mode: "HTML" });
     return msg.message_id;
   }

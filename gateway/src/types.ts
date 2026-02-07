@@ -38,8 +38,10 @@ export interface PiState {
 // Pi RPC Event Types (streamed from Pi)
 export type PiEvent =
   | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
-  | { type: "tool_execution_start"; toolName: string }
-  | { type: "tool_execution_end"; toolName: string; result: unknown }
+  // Tool execution events (Pi RPC schema, see pi-coding-agent docs/rpc.md)
+  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; args?: unknown }
   | { type: "agent_end" }
   | { type: "response"; id?: string; command: string; success: boolean }
   | { type: "auto_compaction_start"; reason: "threshold" | "overflow" }

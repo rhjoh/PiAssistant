@@ -26,6 +26,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     super();
   }
 
+  get currentTextLength(): number {
+    return this.currentText.length;
+  }
+
   get isRunning(): boolean {
     return this.process !== null && this.process.exitCode === null;
   }
