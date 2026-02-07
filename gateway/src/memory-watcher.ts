@@ -32,6 +32,7 @@ export class MemoryWatcher {
   private timer: NodeJS.Timeout | null = null;
   private state: MemoryWatcherState = {};
   private running = false;
+  private lastRotationDate: string | null = null;
 
   constructor(private options: MemoryWatcherOptions) {}
 
@@ -63,6 +64,8 @@ export class MemoryWatcher {
       }
       console.log(`[MemoryWatcher] Processing ${entries.length} new entries`);
 
+      await this.rotateYesterdayIfNeeded();
+
       const context = this.formatContext(entries);
       const roles = entries.reduce((acc, e) => {
         acc[e.role] = (acc[e.role] || 0) + 1;
@@ -89,6 +92,52 @@ export class MemoryWatcher {
       console.error("[MemoryWatcher] Error:", error);
     } finally {
       this.running = false;
+    }
+  }
+
+  private async rotateYesterdayIfNeeded(): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    if (this.lastRotationDate === today) return;
+
+    const yesterdayPath = join(this.options.outputDir, "yesterday.md");
+    try {
+      const content = await fs.readFile(yesterdayPath, "utf8");
+      const header = "# Yesterday (rolling)\n\n";
+      const body = content.startsWith(header) ? content.slice(header.length).trim() : content.trim();
+
+      if (body && this.lastRotationDate) {
+        // Archive previous day's content
+        const archivePath = join(this.options.outputDir, `yesterday-${this.lastRotationDate}.md`);
+        await fs.writeFile(archivePath, content);
+        console.log(`[MemoryWatcher] Rotated yesterday.md → yesterday-${this.lastRotationDate}.md`);
+
+        // Reset yesterday.md
+        await fs.writeFile(yesterdayPath, header);
+
+        // Clean up old archives (keep last 3 days)
+        await this.cleanOldYesterdayArchives(3);
+      }
+    } catch {
+      // File doesn't exist yet, nothing to rotate
+    }
+
+    this.lastRotationDate = today;
+  }
+
+  private async cleanOldYesterdayArchives(keepCount: number): Promise<void> {
+    try {
+      const entries = await fs.readdir(this.options.outputDir);
+      const archives = entries
+        .filter((f) => /^yesterday-\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .sort()
+        .reverse();
+
+      for (const file of archives.slice(keepCount)) {
+        await fs.unlink(join(this.options.outputDir, file));
+        console.log(`[MemoryWatcher] Deleted old archive: ${file}`);
+      }
+    } catch {
+      // Ignore cleanup errors
     }
   }
 
