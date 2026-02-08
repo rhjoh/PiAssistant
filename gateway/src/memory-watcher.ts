@@ -269,8 +269,13 @@ export class MemoryWatcher {
   private async buildMemoryPrompt(context: string): Promise<string> {
     const today = new Date().toISOString().slice(0, 10);
     const template = await fs.readFile(this.options.memoryPromptPath, "utf8");
+    let existingMemories = "";
+    try {
+      existingMemories = await fs.readFile(join(this.options.outputDir, "memory.md"), "utf8");
+    } catch { /* file may not exist */ }
     return template
       .replace("{{TODAY}}", today)
+      .replace("{{EXISTING_MEMORIES}}", existingMemories)
       .replace("{{CONTEXT}}", context);
   }
 

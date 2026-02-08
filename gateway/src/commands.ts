@@ -102,13 +102,18 @@ export async function handleSession(sessionManager: SessionManager): Promise<str
   ];
 
   if (info.context) {
-    lines.push(
+    const ctxLines = [
       ``,
       `🧠 Context:`,
       `   Model: ${info.context.model}`,
       `   Window: ${fmt(info.context.contextWindow)} tokens`,
-      `   Compacts at: ${fmt(info.context.compactThreshold)} tokens`
-    );
+      `   Compacts at: ${fmt(info.context.compactThreshold)} tokens`,
+    ];
+    if (info.currentContextTokens != null) {
+      const pct = ((info.currentContextTokens / info.context.compactThreshold) * 100).toFixed(0);
+      ctxLines.push(`   Current: ~${fmt(info.currentContextTokens)} tokens (${pct}% of compaction threshold)`);
+    }
+    lines.push(...ctxLines);
   }
 
   if (info.stats) {
@@ -123,7 +128,6 @@ export async function handleSession(sessionManager: SessionManager): Promise<str
 
   lines.push(
     ``,
-    `ℹ️ Current context size not available via RPC`,
     `Use /new to archive and start fresh session`
   );
 

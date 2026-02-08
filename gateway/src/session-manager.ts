@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { PiRpcClient } from "./pi-rpc.js";
@@ -144,6 +144,7 @@ export class SessionManager {
     sessionPath: string;
     archiveDir: string;
     compactionCount: number;
+    currentContextTokens: number | null;
     stats: {
       tokens: { input: number; output: number; total: number };
       cost: number;
@@ -195,10 +196,28 @@ export class SessionManager {
       console.error(`[SessionManager] Failed to get state:`, err);
     }
 
+    // Estimate current context from last assistant message's cacheRead + inputTokens
+    let currentContextTokens: number | null = null;
+    try {
+      const content = await readFile(this.sessionPath, "utf-8");
+      const lines = content.trim().split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = JSON.parse(lines[i]);
+        if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.usage) {
+          const u = entry.message.usage;
+          currentContextTokens = (u.cacheRead ?? 0) + (u.inputTokens ?? 0);
+          break;
+        }
+      }
+    } catch (err) {
+      // ignore - file may not exist yet
+    }
+
     return {
       sessionPath: this.sessionPath,
       archiveDir: this.archiveDir,
       compactionCount: this.compactionCount,
+      currentContextTokens,
       stats,
       context,
     };
