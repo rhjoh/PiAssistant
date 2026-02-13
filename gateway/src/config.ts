@@ -35,6 +35,7 @@ export const config = {
       ? process.env.MEMORY_ENABLED === "true"
       : true,
     model: process.env.MEMORY_MODEL ?? "glm-4.7",
+    provider: process.env.MEMORY_PROVIDER ?? "zai",
     sessionDir: process.env.MEMORY_SESSION_DIR ?? join(projectRoot, "sessions"),
     outputDir: process.env.MEMORY_OUTPUT_DIR
       ?? (process.env.PI_CWD ?? homedir()),
@@ -48,8 +49,6 @@ export const config = {
       : 60 * 60 * 1000, // 60 minutes default
     memoryPromptPath: process.env.MEMORY_PROMPT_PATH
       ?? join(process.env.PI_CWD ?? homedir(), "memory-prompt.md"),
-    yesterdayPromptPath: process.env.MEMORY_YESTERDAY_PROMPT_PATH
-      ?? join(process.env.PI_CWD ?? homedir(), "yesterday-prompt.md"),
   },
 };
 

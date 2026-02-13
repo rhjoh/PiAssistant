@@ -134,8 +134,7 @@ async function main(): Promise<void> {
   // Wire up /session command
   telegram.onSession(async () => handleSession(sessionManager));
 
-  // Wire up /new command
-  telegram.onNewSession(async () => handleNew(sessionManager));
+  // Wire up /new command (wired after memoryWatcher init below)
 
   // Wire up /takeover command
   telegram.onTakeover(async () => handleTakeover(pi, sessionWatcher));
@@ -155,15 +154,18 @@ async function main(): Promise<void> {
     outputDir: config.memory.outputDir,
     statePath: config.memory.statePath,
     model: config.memory.model,
+    provider: config.memory.provider,
     intervalMs: config.memory.intervalMs,
     activeWindowMs: config.memory.activeWindowMs,
     memoryPromptPath: config.memory.memoryPromptPath,
-    yesterdayPromptPath: config.memory.yesterdayPromptPath,
   });
+
+  // Wire up /new command (needs memoryWatcher reference)
+  telegram.onNewSession(async () => handleNew(sessionManager, config.pi.sessionPath, memoryWatcher));
 
   if (config.memory.enabled) {
     await memoryWatcher.start();
-    console.log(`[Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, model: ${config.memory.model})`);
+    console.log(`[Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, ${config.memory.provider}/${config.memory.model})`);
   } else {
     console.log("[Gateway] Memory watcher disabled");
   }

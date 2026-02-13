@@ -22,17 +22,16 @@ type MemoryWatcherOptions = {
   outputDir: string;
   statePath: string;
   model: string;
+  provider: string;
   intervalMs: number;
   activeWindowMs: number;
   memoryPromptPath: string;
-  yesterdayPromptPath: string;
 };
 
 export class MemoryWatcher {
   private timer: NodeJS.Timeout | null = null;
   private state: MemoryWatcherState = {};
   private running = false;
-  private lastRotationDate: string | null = null;
 
   constructor(private options: MemoryWatcherOptions) {}
 
@@ -64,8 +63,6 @@ export class MemoryWatcher {
       }
       console.log(`[MemoryWatcher] Processing ${entries.length} new entries`);
 
-      await this.rotateYesterdayIfNeeded();
-
       const context = this.formatContext(entries);
       const roles = entries.reduce((acc, e) => {
         acc[e.role] = (acc[e.role] || 0) + 1;
@@ -81,63 +78,11 @@ export class MemoryWatcher {
         filePath: join(this.options.outputDir, "memory.md"),
       });
 
-      await this.extractAndAppend({
-        target: "yesterday",
-        prompt: await this.buildYesterdayPrompt(context),
-        filePath: join(this.options.outputDir, "yesterday.md"),
-      });
-
       await this.saveState();
     } catch (error) {
       console.error("[MemoryWatcher] Error:", error);
     } finally {
       this.running = false;
-    }
-  }
-
-  private async rotateYesterdayIfNeeded(): Promise<void> {
-    const today = new Date().toISOString().slice(0, 10);
-    if (this.lastRotationDate === today) return;
-
-    const yesterdayPath = join(this.options.outputDir, "yesterday.md");
-    try {
-      const content = await fs.readFile(yesterdayPath, "utf8");
-      const header = "# Yesterday (rolling)\n\n";
-      const body = content.startsWith(header) ? content.slice(header.length).trim() : content.trim();
-
-      if (body && this.lastRotationDate) {
-        // Archive previous day's content
-        const archivePath = join(this.options.outputDir, `yesterday-${this.lastRotationDate}.md`);
-        await fs.writeFile(archivePath, content);
-        console.log(`[MemoryWatcher] Rotated yesterday.md → yesterday-${this.lastRotationDate}.md`);
-
-        // Reset yesterday.md
-        await fs.writeFile(yesterdayPath, header);
-
-        // Clean up old archives (keep last 3 days)
-        await this.cleanOldYesterdayArchives(3);
-      }
-    } catch {
-      // File doesn't exist yet, nothing to rotate
-    }
-
-    this.lastRotationDate = today;
-  }
-
-  private async cleanOldYesterdayArchives(keepCount: number): Promise<void> {
-    try {
-      const entries = await fs.readdir(this.options.outputDir);
-      const archives = entries
-        .filter((f) => /^yesterday-\d{4}-\d{2}-\d{2}\.md$/.test(f))
-        .sort()
-        .reverse();
-
-      for (const file of archives.slice(keepCount)) {
-        await fs.unlink(join(this.options.outputDir, file));
-        console.log(`[MemoryWatcher] Deleted old archive: ${file}`);
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }
 
@@ -214,7 +159,7 @@ export class MemoryWatcher {
       if (parsed.type !== "message" || !parsed.message) return null;
 
       const role = parsed.message.role;
-      if (!role || !["user", "assistant", "toolResult"].includes(role)) {
+      if (!role || !["user", "assistant"].includes(role)) {
         return null;
       }
 
@@ -248,7 +193,7 @@ export class MemoryWatcher {
         .map((part) => {
           if (typeof part === "string") return part;
           if (part?.type === "text" && typeof part.text === "string") return part.text;
-          if (part?.type === "thinking" && typeof part.thinking === "string") return part.thinking;
+          if (part?.type === "thinking") return "";
           return "";
         })
         .join("\n")
@@ -279,20 +224,12 @@ export class MemoryWatcher {
       .replace("{{CONTEXT}}", context);
   }
 
-  private async buildYesterdayPrompt(context: string): Promise<string> {
-    const today = new Date().toISOString().slice(0, 10);
-    const template = await fs.readFile(this.options.yesterdayPromptPath, "utf8");
-    return template
-      .replace("{{TODAY}}", today)
-      .replace("{{CONTEXT}}", context);
-  }
-
   private async extractAndAppend(params: {
-    target: "memory" | "yesterday";
+    target: "memory";
     prompt: string;
     filePath: string;
   }): Promise<void> {
-    console.log(`[MemoryWatcher] Extracting ${params.target} (model: ${this.options.model})...`);
+    console.log(`[MemoryWatcher] Extracting ${params.target} (provider/model: ${this.options.provider}/${this.options.model})...`);
     console.log(`[MemoryWatcher:${params.target}] Prompt (${params.prompt.length} chars):`);
     console.log(`--- START PROMPT ---`);
     console.log(params.prompt);
@@ -317,6 +254,8 @@ export class MemoryWatcher {
           "--print",
           "--no-session",
           "--no-tools",
+          "--provider",
+          this.options.provider,
           "--model",
           this.options.model,
           params.prompt,
@@ -383,7 +322,6 @@ export class MemoryWatcher {
   private async ensureMemoryFiles(): Promise<void> {
     await fs.mkdir(this.options.outputDir, { recursive: true });
     await this.ensureFile(join(this.options.outputDir, "memory.md"), "# Memory (long-term)\n\n");
-    await this.ensureFile(join(this.options.outputDir, "yesterday.md"), "# Yesterday (rolling)\n\n");
   }
 
   private async ensureFile(path: string, header: string): Promise<void> {
@@ -391,6 +329,14 @@ export class MemoryWatcher {
       await fs.access(path);
     } catch {
       await fs.writeFile(path, header);
+    }
+  }
+
+  async resetFileOffset(filePath: string): Promise<void> {
+    if (this.state[filePath]) {
+      this.state[filePath].offset = 0;
+      await this.saveState();
+      console.log(`[MemoryWatcher] Reset offset for ${filePath}`);
     }
   }
 

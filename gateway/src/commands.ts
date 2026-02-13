@@ -1,6 +1,7 @@
 import type { PiRpcClient } from "./pi-rpc.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SessionWatcher } from "./session-watcher.js";
+import type { MemoryWatcher } from "./memory-watcher.js";
 import type { PiState } from "./types.js";
 
 // Handle /status command - show current Pi state
@@ -135,11 +136,16 @@ export async function handleSession(sessionManager: SessionManager): Promise<str
 }
 
 // Handle /new command - archive current session and start fresh
-export async function handleNew(sessionManager: SessionManager): Promise<string> {
+export async function handleNew(sessionManager: SessionManager, sessionPath: string, memoryWatcher?: MemoryWatcher): Promise<string> {
   const result = await sessionManager.archiveAndStartNew();
 
   if (result.error) {
     return `❌ Failed to start new session: ${result.error}`;
+  }
+
+  // Reset memory watcher offset so it re-reads the truncated file
+  if (memoryWatcher) {
+    await memoryWatcher.resetFileOffset(sessionPath);
   }
 
   const lines = [
