@@ -458,7 +458,9 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
     @State private var pasteMonitor: AnyObject?
     @State private var isAutoScrollEnabled = true  // Auto-scroll when near bottom
-    
+    @State private var hasCompletedInitialScroll = false
+    @State private var scrollToBottom: (() -> Void)?
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -549,66 +551,65 @@ struct ChatView: View {
             .background(.ultraThinMaterial)
             
             // Messages List
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollViewWithOffsetTracking(
-                        onScroll: { offset, contentHeight, visibleHeight in
-                            // User is considered "at bottom" if within 50pts of the end
-                            let isAtBottom = (contentHeight - offset - visibleHeight) < 50
-                            // Only update if changed to avoid unnecessary renders
-                            if isAutoScrollEnabled != isAtBottom {
-                                isAutoScrollEnabled = isAtBottom
-                            }
+            ZStack(alignment: .bottomTrailing) {
+                ScrollViewWithOffsetTracking(
+                    onScroll: { offset, contentHeight, visibleHeight in
+                        // User is considered "at bottom" if within 50pts of the end
+                        let isAtBottom = (contentHeight - offset - visibleHeight) < 50
+                        // Only update if changed to avoid unnecessary renders
+                        if isAutoScrollEnabled != isAtBottom {
+                            isAutoScrollEnabled = isAtBottom
                         }
-                    ) {
-                        LazyVStack(spacing: 16) {
-                            ForEach(viewModel.messages) { message in
-                                MessageView(message: message, showThinking: settings.showThinking, zoomLevel: settings.zoomLevel)
-                            }
-                            // Anchor for programmatic scroll
-                            Color.clear
-                                .frame(height: 1)
-                                .id("bottomAnchor")
-                        }
-                        .padding()
+                    },
+                    onScrollToBottomCallback: { scrollFn in
+                        self.scrollToBottom = scrollFn
                     }
-                    .onChange(of: viewModel.messages.count) { _ in
+                ) {
+                    LazyVStack(spacing: 16) {
+                        ForEach(viewModel.messages) { message in
+                            MessageView(message: message, showThinking: settings.showThinking, zoomLevel: settings.zoomLevel)
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: viewModel.messages.count) { _ in
+                    // On initial load (first time we get messages), scroll to bottom
+                    if !hasCompletedInitialScroll && !viewModel.messages.isEmpty {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            scrollToBottom?()
+                            hasCompletedInitialScroll = true
+                        }
+                    } else if isAutoScrollEnabled {
                         // Only auto-scroll if user was already at bottom when new message arrives
-                        if isAutoScrollEnabled {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
-                            }
-                        }
-                    }
-                    
-                    // Scroll to bottom button (shown when auto-scroll disabled)
-                    if !isAutoScrollEnabled {
-                        Button(action: {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
-                            }
-                            isAutoScrollEnabled = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                Text("New messages")
-                                    .font(.caption)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(20)
-                            .shadow(radius: 4)
-                        }
-                        .buttonStyle(.borderless)
-                        .padding(.trailing, 16)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        scrollToBottom?()
                     }
                 }
+
+                // Scroll to bottom button (shown when auto-scroll disabled)
+                if !isAutoScrollEnabled {
+                    Button(action: {
+                        scrollToBottom?()
+                        isAutoScrollEnabled = true
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.down.circle.fill")
+                            Text("New messages")
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(20)
+                        .shadow(radius: 4)
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
-            
+
             Divider()
             
             // Input Area with Image Attachments and Command Popup
@@ -864,33 +865,39 @@ struct ImageAttachmentThumbnail: View {
 // MARK: - ScrollView with Offset Tracking
 /// A ScrollView that reports scroll offset relative to its content
 struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
-    let onScroll: (CGFloat, CGFloat, CGFloat) -> Void  // offset, contentHeight, visibleHeight
+    let onScroll: (CGFloat, CGFloat, CGFloat) -> Void
+    let onScrollToBottomCallback: ((@escaping () -> Void) -> Void)?
     let content: Content
-    
-    init(onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void, @ViewBuilder content: () -> Content) {
+
+    init(
+        onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void,
+        onScrollToBottomCallback: ((@escaping () -> Void) -> Void)? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.onScroll = onScroll
+        self.onScrollToBottomCallback = onScrollToBottomCallback
         self.content = content()
     }
-    
+
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
-        
+
+        context.coordinator.scrollView = scrollView
+
         let documentView = NSHostingView(rootView: content)
         documentView.translatesAutoresizingMaskIntoConstraints = false
-        
+
         scrollView.documentView = documentView
-        
-        // Set up constraints
+
         NSLayoutConstraint.activate([
             documentView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             documentView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
         ])
-        
-        // Observe scroll notifications
+
         scrollView.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(
             context.coordinator,
@@ -898,47 +905,65 @@ struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
         )
-        
-        // Initial report
+
         DispatchQueue.main.async {
+            let scrollFn = { [weak scrollView] in
+                guard let scrollView = scrollView else { return }
+                guard let documentView = scrollView.documentView else { return }
+                let contentHeight = documentView.frame.height
+                let visibleHeight = scrollView.contentView.bounds.height
+                let maxOffset = max(0, contentHeight - visibleHeight)
+
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.2
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    scrollView.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: maxOffset))
+                }
+            }
+            context.coordinator.onScrollToBottomCallback?(scrollFn)
             context.coordinator.reportScrollPosition(scrollView)
         }
-        
+
         return scrollView
     }
-    
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        // Update the document view content
         if let documentView = scrollView.documentView as? NSHostingView<Content> {
             documentView.rootView = content
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScroll: onScroll)
+        Coordinator(onScroll: onScroll, onScrollToBottomCallback: onScrollToBottomCallback)
     }
-    
+
     class Coordinator: NSObject {
         let onScroll: (CGFloat, CGFloat, CGFloat) -> Void
-        
-        init(onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void) {
+        let onScrollToBottomCallback: ((@escaping () -> Void) -> Void)?
+        weak var scrollView: NSScrollView?
+
+        init(
+            onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void,
+            onScrollToBottomCallback: ((@escaping () -> Void) -> Void)? = nil
+        ) {
             self.onScroll = onScroll
+            self.onScrollToBottomCallback = onScrollToBottomCallback
         }
-        
+
         @objc func boundsChanged(_ notification: Notification) {
             guard let contentView = notification.object as? NSClipView else { return }
             guard let scrollView = contentView.superview?.superview as? NSScrollView else { return }
             reportScrollPosition(scrollView)
         }
-        
+
         func reportScrollPosition(_ scrollView: NSScrollView) {
             let contentView = scrollView.contentView
             let documentView = scrollView.documentView
-            
+
             let offset = contentView.bounds.origin.y
             let visibleHeight = contentView.bounds.height
             let contentHeight = documentView?.bounds.height ?? 0
-            
+
             onScroll(offset, contentHeight, visibleHeight)
         }
     }
