@@ -321,7 +321,18 @@ extension ChatViewModel: ChatServiceDelegate {
     func chatService(_ service: ChatService, didStartToolCall id: String, name: String, args: Any?, label: String) {
         guard let lastIndex = messages.indices.last else { return }
         
-        let argsString = args.map { "\($0)" } ?? "{}"
+        // Serialize args to proper JSON string
+        let argsString: String
+        if let args = args {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
+                argsString = String(data: data, encoding: .utf8) ?? "{}"
+            } catch {
+                argsString = "{}"
+            }
+        } else {
+            argsString = "{}"
+        }
         messages[lastIndex].items.append(.toolCall(id: id, name: name, arguments: argsString))
     }
     
