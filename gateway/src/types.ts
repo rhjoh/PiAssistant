@@ -1,14 +1,22 @@
 // Pi RPC Command Types (sent to Pi via stdin)
 export type PiCommand =
-  | { type: "prompt"; message: string; id?: string }
+  | { type: "prompt"; message: string; images?: ImageContent[]; id?: string }
   | { type: "abort"; id?: string }
   | { type: "get_state"; id?: string }
   | { type: "get_messages"; id?: string }
   | { type: "get_session_stats"; id?: string }
   | { type: "get_available_models"; id?: string }
   | { type: "set_model"; provider: string; modelId: string; id?: string }
+  | { type: "set_thinking_level"; level: string; id?: string }
   | { type: "new_session"; parentSession?: string; id?: string }
   | { type: "switch_session"; sessionPath: string; id?: string };
+
+// Image content for Pi RPC (see docs/rpc.md)
+export interface ImageContent {
+  type: "image";
+  data: string; // base64 encoded
+  mimeType: string;
+}
 
 // Pi RPC Response (received from Pi via stdout)
 export interface PiResponse {

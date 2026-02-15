@@ -12,3 +12,10 @@ tmp/
 
 .claude
 AGENTS.md
+
+# Swift/macOS client build artifacts
+.build/
+clients/**/.build/
+DerivedData/
+*.xcuserstate
+.swiftpm/

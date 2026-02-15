@@ -104,7 +104,12 @@ export class MemoryWatcher {
       }
 
       const state = this.state[sessionPath];
-      if (stat.size <= state.offset) {
+      if (stat.size < state.offset) {
+        // File was truncated/rotated - reset offset to read from beginning
+        console.log(`[MemoryWatcher] ${sessionPath}: file shrunk (${state.offset} -> ${stat.size} bytes), resetting offset`);
+        state.offset = 0;
+      } else if (stat.size === state.offset) {
+        // No new data
         state.mtimeMs = stat.mtimeMs;
         continue;
       }
