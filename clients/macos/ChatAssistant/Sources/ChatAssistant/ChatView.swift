@@ -338,17 +338,43 @@ extension ChatViewModel: ChatServiceDelegate {
     
     func chatService(_ service: ChatService, didReceiveToolOutput id: String, output: String, truncated: Bool) {
         guard let lastIndex = messages.indices.last else { return }
-        
-        // Find the tool call and add result after it
+
+        let finalOutput = truncated ? output + "\n… (truncated)" : output
+
+        // Update existing tool result if present (streaming), otherwise insert after the tool call.
+        if let existingResultIndex = messages[lastIndex].items.firstIndex(where: { item in
+            if case .toolResult(let toolCallId, _, _, _) = item {
+                return toolCallId == id
+            }
+            return false
+        }) {
+            let toolName = getToolNameForResult(toolCallId: id, in: messages[lastIndex].items) ?? "tool"
+
+            let existingContent: String
+            if case .toolResult(_, _, let content, _) = messages[lastIndex].items[existingResultIndex] {
+                existingContent = content
+            } else {
+                existingContent = ""
+            }
+
+            let mergedOutput = mergeToolOutput(existing: existingContent, incoming: finalOutput)
+
+            messages[lastIndex].items[existingResultIndex] = .toolResult(
+                toolCallId: id,
+                toolName: toolName,
+                content: mergedOutput,
+                isError: false
+            )
+            return
+        }
+
         if let toolCallIndex = messages[lastIndex].items.firstIndex(where: { item in
             if case .toolCall(let toolId, _, _) = item {
                 return toolId == id
             }
             return false
         }) {
-            // Get tool name from the call
             let toolName = getToolName(from: messages[lastIndex].items[toolCallIndex])
-            let finalOutput = truncated ? output + "\n… (truncated)" : output
             messages[lastIndex].items.insert(
                 .toolResult(toolCallId: id, toolName: toolName, content: finalOutput, isError: false),
                 at: toolCallIndex + 1
@@ -459,6 +485,33 @@ extension ChatViewModel: ChatServiceDelegate {
             return name
         }
         return "tool"
+    }
+
+    private func mergeToolOutput(existing: String, incoming: String) -> String {
+        if existing.isEmpty { return incoming }
+        if incoming.isEmpty { return existing }
+
+        // If gateway sends cumulative snapshots, just replace.
+        if incoming.hasPrefix(existing) || incoming.count >= existing.count {
+            return incoming
+        }
+
+        // If incoming is just a shorter repeat (e.g. truncation), keep existing.
+        if existing.contains(incoming) {
+            return existing
+        }
+
+        // If gateway sends deltas/chunks, append so streaming remains visible.
+        return existing + incoming
+    }
+
+    private func getToolNameForResult(toolCallId: String, in items: [ContentItem]) -> String? {
+        for item in items {
+            if case .toolCall(let id, let name, _) = item, id == toolCallId {
+                return name
+            }
+        }
+        return nil
     }
 }
 
@@ -572,6 +625,12 @@ struct ChatView: View {
                             isAutoScrollEnabled = isAtBottom
                         }
                     },
+                    onContentHeightChange: { _ in
+                        // Keep following streaming growth (text/tool output) while sticky
+                        if hasCompletedInitialScroll && isAutoScrollEnabled {
+                            scrollToBottom?()
+                        }
+                    },
                     onScrollToBottomCallback: { scrollFn in
                         self.scrollToBottom = scrollFn
                     }
@@ -652,7 +711,7 @@ struct ChatView: View {
                             placeholder: viewModel.imageAttachments.isEmpty ? "Message..." : "Add a message or send images...",
                             onSubmit: {
                                 if !viewModel.showCommandPopup && !viewModel.isStreaming {
-                                    viewModel.sendMessage()
+                                    sendMessageFromUI()
                                 }
                             }
                         )
@@ -661,7 +720,7 @@ struct ChatView: View {
                         }
                         
                         // Send button
-                        Button(action: viewModel.isStreaming ? viewModel.cancelStreaming : viewModel.sendMessage) {
+                        Button(action: viewModel.isStreaming ? viewModel.cancelStreaming : sendMessageFromUI) {
                             Image(systemName: viewModel.isStreaming ? "stop.fill" : "arrow.up.circle.fill")
                                 .font(.system(size: 28))
                                 .foregroundColor(viewModel.isStreaming ? .red : .blue)
@@ -725,6 +784,21 @@ struct ChatView: View {
     
     private var canSend: Bool {
         !viewModel.inputText.trimmingCharacters(in: .whitespaces).isEmpty || !viewModel.imageAttachments.isEmpty
+    }
+
+    private func sendMessageFromUI() {
+        let wasSticky = isAutoScrollEnabled
+        viewModel.sendMessage()
+
+        // Always show the just-sent user message.
+        scrollToBottom?()
+
+        // If user intentionally scrolled up before sending, don't re-enable sticky follow mode.
+        if !wasSticky {
+            DispatchQueue.main.async {
+                isAutoScrollEnabled = false
+            }
+        }
     }
     
     // MARK: - Drag & Drop Handling
@@ -880,15 +954,18 @@ struct ImageAttachmentThumbnail: View {
 /// A ScrollView that reports scroll offset relative to its content
 struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
     let onScroll: (CGFloat, CGFloat, CGFloat) -> Void
+    let onContentHeightChange: ((CGFloat) -> Void)?
     let onScrollToBottomCallback: ((@escaping () -> Void) -> Void)?
     let content: Content
 
     init(
         onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void,
+        onContentHeightChange: ((CGFloat) -> Void)? = nil,
         onScrollToBottomCallback: ((@escaping () -> Void) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.onScroll = onScroll
+        self.onContentHeightChange = onContentHeightChange
         self.onScrollToBottomCallback = onScrollToBottomCallback
         self.content = content()
     }
@@ -903,6 +980,7 @@ struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
 
         let documentView = NSHostingView(rootView: content)
         documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.postsFrameChangedNotifications = true
 
         scrollView.documentView = documentView
 
@@ -918,6 +996,12 @@ struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
             selector: #selector(Coordinator.boundsChanged(_:)),
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
+        )
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.documentFrameChanged(_:)),
+            name: NSView.frameDidChangeNotification,
+            object: documentView
         )
 
         DispatchQueue.main.async {
@@ -948,19 +1032,27 @@ struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScroll: onScroll, onScrollToBottomCallback: onScrollToBottomCallback)
+        Coordinator(
+            onScroll: onScroll,
+            onContentHeightChange: onContentHeightChange,
+            onScrollToBottomCallback: onScrollToBottomCallback
+        )
     }
 
     class Coordinator: NSObject {
         let onScroll: (CGFloat, CGFloat, CGFloat) -> Void
+        let onContentHeightChange: ((CGFloat) -> Void)?
         let onScrollToBottomCallback: ((@escaping () -> Void) -> Void)?
         weak var scrollView: NSScrollView?
+        private var lastReportedContentHeight: CGFloat = 0
 
         init(
             onScroll: @escaping (CGFloat, CGFloat, CGFloat) -> Void,
+            onContentHeightChange: ((CGFloat) -> Void)? = nil,
             onScrollToBottomCallback: ((@escaping () -> Void) -> Void)? = nil
         ) {
             self.onScroll = onScroll
+            self.onContentHeightChange = onContentHeightChange
             self.onScrollToBottomCallback = onScrollToBottomCallback
         }
 
@@ -968,6 +1060,15 @@ struct ScrollViewWithOffsetTracking<Content: View>: NSViewRepresentable {
             guard let contentView = notification.object as? NSClipView else { return }
             guard let scrollView = contentView.superview?.superview as? NSScrollView else { return }
             reportScrollPosition(scrollView)
+        }
+
+        @objc func documentFrameChanged(_ notification: Notification) {
+            guard let view = notification.object as? NSView else { return }
+            let newHeight = view.frame.height
+            if abs(newHeight - lastReportedContentHeight) > 0.5 {
+                lastReportedContentHeight = newHeight
+                onContentHeightChange?(newHeight)
+            }
         }
 
         func reportScrollPosition(_ scrollView: NSScrollView) {

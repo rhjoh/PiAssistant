@@ -514,14 +514,14 @@ struct ToolResultView: View {
 // MARK: - Typing Indicator
 struct TypingIndicator: View {
     @State private var isAnimating = false
-    
+
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<3) { index in
                 Circle()
                     .fill(Color.gray.opacity(0.6))
                     .frame(width: 5, height: 5)
-                    .scaleEffect(isAnimating ? 1.2 : 0.8)
+                    .opacity(isAnimating ? 1.0 : 0.35)
                     .animation(
                         Animation.easeInOut(duration: 0.4)
                             .repeatForever(autoreverses: true)
@@ -530,6 +530,7 @@ struct TypingIndicator: View {
                     )
             }
         }
+        .frame(height: 8) // Hard layout boundary so animation can't shift surrounding messages
         .padding(.horizontal, 4)
         .onAppear { isAnimating = true }
     }
