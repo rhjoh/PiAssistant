@@ -698,9 +698,12 @@ struct ChatView: View {
         }
         .background(
             ViewModifiers(
-                zoomIn: settings.zoomIn, 
-                zoomOut: settings.zoomOut, 
+                zoomIn: settings.zoomIn,
+                zoomOut: settings.zoomOut,
                 resetZoom: settings.resetZoom,
+                cancelStreaming: { [weak viewModel] in
+                    viewModel?.cancelStreaming()
+                },
                 onPasteImage: { attachments in
                     let added = viewModel.addImageAttachments(attachments)
                     return added.count
@@ -974,6 +977,7 @@ struct ViewModifiers: NSViewRepresentable {
     let zoomIn: () -> Void
     let zoomOut: () -> Void
     let resetZoom: () -> Void
+    let cancelStreaming: () -> Void
     var onPasteImage: (([ImageAttachment]) -> Int)?
     
     func makeNSView(context: Context) -> NSView {
@@ -981,6 +985,13 @@ struct ViewModifiers: NSViewRepresentable {
         
         // Register keyboard shortcuts
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Check for Ctrl+C (cancel streaming)
+            if event.modifierFlags.contains(.control) && event.charactersIgnoringModifiers?.lowercased() == "c" {
+                self.cancelStreaming()
+                return nil // Consume the event
+            }
+            
+            // Check for Command+ shortcuts
             if event.modifierFlags.contains(.command) {
                 switch event.charactersIgnoringModifiers {
                 case "=", "+":
