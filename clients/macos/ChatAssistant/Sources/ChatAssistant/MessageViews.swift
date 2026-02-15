@@ -323,8 +323,16 @@ struct ToolCallView: View {
                 Image(systemName: iconForTool(name))
                     .font(.system(size: 16 * zoomLevel))
                     .foregroundColor(colorForTool(name))
-                Text("Using tool: \(name)")
-                    .font(.system(size: 14 * zoomLevel, weight: .medium))
+                VStack(alignment: .leading, spacing: 2 * zoomLevel) {
+                    Text("Using tool: \(name)")
+                        .font(.system(size: 14 * zoomLevel, weight: .medium))
+                    if let detail = toolDetailText {
+                        Text(detail)
+                            .font(.system(size: 11 * zoomLevel))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                     .foregroundColor(.secondary)
@@ -356,6 +364,31 @@ struct ToolCallView: View {
                 isExpanded.toggle()
             }
         }
+    }
+    
+    /// Extracts a short detail text for the tool call (e.g., command name for bash, filename for read)
+    private var toolDetailText: String? {
+        // Parse arguments as JSON to extract details
+        guard let data = arguments.data(using: .utf8) else { return nil }
+        
+        if name == "bash" || name == "shell" {
+            // Extract first word of command
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let command = json["command"] as? String ?? json["cmd"] as? String {
+                let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+                let firstWord = trimmed.split(separator: " ", omittingEmptySubsequences: true).first
+                return firstWord.map { "\($0)" }
+            }
+        } else if name == "read" || name == "write" || name == "edit" {
+            // Extract filename from path
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let path = json["path"] as? String {
+                let url = URL(fileURLWithPath: path)
+                return url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
+            }
+        }
+        
+        return nil
     }
     
     private func formatJSON(_ json: String) -> String {
