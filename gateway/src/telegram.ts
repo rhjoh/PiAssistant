@@ -256,12 +256,15 @@ export class TelegramBot {
     this.takeoverHandler = handler;
   }
 
+  /**
+   * Sends a message to the allowed user with HTML formatting.
+   */
   async sendMessage(text: string): Promise<void> {
     if (!config.telegram.allowedUserId) {
       console.warn("[Telegram] No allowed user ID configured, cannot send message");
       return;
     }
-    await this.bot.api.sendMessage(config.telegram.allowedUserId, text);
+    await this.bot.api.sendMessage(config.telegram.allowedUserId, text, { parse_mode: "HTML" });
   }
 
   /**

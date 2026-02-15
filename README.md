@@ -1,77 +1,187 @@
-# Personal OS Gateway (Pi + Telegram)
+# Personal Assistant
 
-A personal AI assistant that bridges Telegram messages to a local Pi coding agent running in RPC mode. The gateway owns a single persistent Pi session and forwards responses back to Telegram.
+A personal AI assistant system with multi-client support: Telegram, native macOS app, and WebSocket API.
 
 ```
-Telegram ↔ Gateway (Node.js) ↔ Pi RPC ↔ Session (JSONL)
+┌───────────┐  ┌─────────────┐  ┌──────────┐
+│  Telegram │  │   macOS     │  │  Other   │
+│   (Bot)   │  │   (Swift)   │  │ Clients  │
+└─────┬─────┘  └──────┬──────┘  └────┬─────┘
+      │               │              │
+      └───────────────┼──────────────┘
+                      │
+              ┌───────┴───────┐
+              │ Gateway (3456) │  ← Node.js, owns Pi RPC
+              │  (WebSocket)   │
+              └───────┬───────┘
+                      │
+              ┌───────┴───────┐
+              │   Pi RPC       │  ← main.jsonl session
+              └───────────────┘
 ```
 
-## What's in this repo
+## Repository Structure
 
-- `gateway/` — Node.js/TypeScript gateway service (grammY bot + Pi RPC client)
-- `docs/` — architecture notes and roadmap
-- `sessions/` — session JSONL files used during development
-- `working_dir/` — working context for the agent
+```
+assistant/
+├── gateway/              # Node.js gateway service
+│   ├── src/
+│   │   ├── index.ts          # Main entry
+│   │   ├── websocket-server.ts  # WebSocket server (port 3456)
+│   │   ├── broadcast.ts      # Multi-client message distribution
+│   │   ├── telegram.ts       # Telegram bot
+│   │   ├── telegram-client.ts # Telegram adapter for broadcast
+│   │   └── ...
+│   └── package.json
+├── clients/
+│   └── macos/            # Native macOS chat client
+│       └── ChatAssistant/
+│           ├── Sources/
+│           │   ├── ChatAssistant.swift  # App entry
+│           │   ├── ChatView.swift       # Main UI
+│           │   ├── ChatService.swift    # WebSocket client
+│           │   ├── Models.swift         # Data models
+│           │   └── MessageViews.swift   # UI components
+│           └── Package.swift
+├── docs/                 # Documentation
+│   ├── ARCHITECTURE.md
+│   └── feature_roadmap.md
+├── sessions/             # Session files (main.jsonl)
+└── working_dir/          # Agent working directory
+```
 
-## Current behavior
+## Quick Start
 
-- Telegram bot receives messages and forwards them to Pi in RPC mode.
-- Pi streams text deltas; the gateway aggregates and replies once complete.
-- If tools run during a prompt, the final response is sent as a formatted HTML code block.
-- `/takeover` exists but is not yet implemented (planned for TUI handoff).
+### 1. Start the Gateway
 
-Planned work and known issues live in `docs/feature_roadmap.md`.
+```bash
+cd gateway
+npm install
+npm run dev
+```
 
-## Setup
+The gateway starts:
+- **Pi RPC** (continuous, owns main.jsonl)
+- **WebSocket server** on port 3456
+- **Telegram bot** (if configured)
 
-1. Install gateway dependencies:
+### 2. Run the macOS Client
 
-   ```bash
-   cd gateway
-   npm install
-   ```
+```bash
+cd clients/macos/ChatAssistant
+swift build
+swift run
+```
 
-2. Create `gateway/.env`:
+Or open in Xcode:
+```bash
+open clients/macos/ChatAssistant/Package.swift
+```
 
-   ```env
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-   TELEGRAM_ALLOWED_USER_ID=123456789
+### 3. Use Telegram (Optional)
 
-   # Optional overrides
-   PI_SESSION_PATH=/path/to/main.jsonl
-   PI_CWD=/path/for/pi/working/dir
-   ```
+Set up `gateway/.env`:
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_ALLOWED_USER_ID=your_user_id
+```
 
-3. Run the gateway:
-   ```bash
-   cd gateway
-   npm run dev
-   ```
+## Architecture
 
-## Configuration notes
+### Gateway (Multi-Client Hub)
 
-- `TELEGRAM_ALLOWED_USER_ID` is used to whitelist a single user.
-- Default Pi session path is `~/.pi/agent/sessions/main.jsonl` unless overridden.
-- Pi must be available on PATH as `pi`.
-- If you want to keep sessions and a working directory inside this repo, create them manually (e.g., `mkdir -p sessions working_dir`) and point `PI_SESSION_PATH` / `PI_CWD` to those paths in `gateway/.env`.
+The **Gateway owns the Pi RPC session**. Pi runs continuously in RPC mode. All clients connect through the Gateway:
 
-## Key files
+- **Telegram bot** → receives messages, broadcasts responses
+- **macOS app** → WebSocket connection to `ws://localhost:3456`
+- **Future clients** → same WebSocket protocol
 
-- `gateway/src/index.ts` — process startup, wiring, and shutdown
-- `gateway/src/telegram.ts` — Telegram bot handlers and formatting
-- `gateway/src/pi-rpc.ts` — Pi RPC process wrapper and event handling
-- `gateway/src/config.ts` — environment configuration
-- `docs/ARCHITECTURE.md` — system design and future plans
-- `docs/feature_roadmap.md` — current priorities, bugs, and roadmap
+All connected clients see the same conversation simultaneously.
 
-## Development workflow
+### WebSocket Protocol
 
-There is no automated test suite yet. The current manual loop is:
+Connect to `ws://localhost:3456`
 
-1. `cd gateway && npm run dev`
-2. Send messages in Telegram
-3. Watch gateway logs for errors
+**Client → Gateway:**
+```json
+{ "type": "prompt", "message": "hello" }
+{ "type": "abort" }
+{ "type": "get_state" }
+```
+
+**Gateway → Client:**
+```json
+{ "type": "text_delta", "data": { "content": "Hello" } }
+{ "type": "tool_start", "data": { "toolCallId": "...", "toolName": "bash", "label": "$ ls" } }
+{ "type": "tool_output", "data": { "toolCallId": "...", "output": "..." } }
+{ "type": "done", "data": { "finalText": "..." } }
+```
+
+## Configuration
+
+### Gateway (.env)
+
+```env
+# Required for Telegram
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_ALLOWED_USER_ID=123456789
+
+# Optional paths
+PI_SESSION_PATH=/path/to/main.jsonl
+PI_CWD=/path/for/pi/working/dir
+
+# Optional intervals
+MEMORY_SCAN_INTERVAL_MS=600000    # 10 min
+HEARTBEAT_INTERVAL_MS=900000      # 15 min
+```
+
+### macOS Client
+
+Connects to `ws://localhost:3456` by default. No configuration needed.
+
+## Key Features
+
+- **Multi-client sync** - Telegram + macOS see same conversation
+- **Real-time streaming** - Token-by-token responses via WebSocket
+- **Tool visualization** - Expandable tool cards with output
+- **Auto-reconnect** - Handles disconnections gracefully
+- **Session persistence** - Pi owns main.jsonl, survives restarts
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show gateway status |
+| `/model` | Show/change model |
+| `/session` | Session stats |
+| `/new` | Archive session, start fresh |
+
+## Development
+
+### Gateway
+```bash
+cd gateway
+npm run dev        # Watch mode
+npm run build      # TypeScript compile
+npm run lint       # ESLint
+```
+
+### macOS Client
+```bash
+cd clients/macos/ChatAssistant
+swift build
+swift run
+```
 
 ## Notes
 
-This is a single-user personal project. Simplicity over enterprise patterns.
+- Pi must be available on PATH as `pi`
+- Single-user personal project - simplicity over enterprise patterns
+- Gateway binds WebSocket to localhost only (security)
+- Native Pi TUI not available while Gateway is running (by design)
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` - System design
+- `docs/feature_roadmap.md` - Roadmap and bugs
+- `clients/macos/README.md` - macOS client details

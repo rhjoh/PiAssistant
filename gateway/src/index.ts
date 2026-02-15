@@ -1,11 +1,12 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
 
 import { handleStatus, handleModel, handleSession, handleNew, handleTakeover } from "./commands.js";
-import { handlePrompt } from "./prompt-handler.js";
 import { PiRpcClient } from "./pi-rpc.js";
 import { SessionManager } from "./session-manager.js";
-import { SessionWatcher } from "./session-watcher.js";
 import { TelegramBot } from "./telegram.js";
+import { TelegramClient } from "./telegram-client.js";
+import { BroadcastManager } from "./broadcast.js";
+import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
 import { MemoryWatcher } from "./memory-watcher.js";
 
@@ -24,34 +25,40 @@ function setupTimestampedLogging(): void {
 
 async function main(): Promise<void> {
   setupTimestampedLogging();
+  
   // Validate environment
   validateConfig();
 
   console.log("[Gateway] Starting Personal OS Gateway...");
   console.log(`[Gateway] Pi session: ${config.pi.sessionPath}`);
+  console.log(`[Gateway] Thinking level: ${config.pi.thinkingLevel}`);
+  console.log(`[Gateway] Architecture: Gateway owns Pi RPC (multi-client mode)`);
 
-  // Initialize components
+  // Initialize Pi RPC client (will run continuously)
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);
-  const telegram = new TelegramBot();
+  
+  // Initialize BroadcastManager (handles multi-client message distribution)
+  const broadcastManager = new BroadcastManager(pi);
   
   // Initialize session manager with archive notification
   const sessionManager = new SessionManager(pi, { 
     sessionPath: config.pi.sessionPath,
     onArchive: (archivePath, reason) => {
       const reasonText = reason === "compaction" ? "Context threshold reached" : "Manual rotation";
-      const message = [
-        `🔄 Session archived`,
-        ``,
-        `Reason: ${reasonText}`,
-        `Archived: ${archivePath}`,
-        reason === "compaction" ? `New session started automatically` : ``,
-      ].filter(Boolean).join("\n");
-      
-      telegram.sendMessage(message).catch((err) => {
-        console.error("[Gateway] Failed to send archive notification:", err);
-      });
+      console.log(`[SessionManager] Session archived: ${archivePath} (${reasonText})`);
     }
   });
+  
+  // Wire up session manager to broadcast manager for /new command
+  broadcastManager.setSessionManager(sessionManager);
+  
+  // Initialize Telegram bot
+  const telegram = new TelegramBot();
+  const telegramClient = new TelegramClient(telegram);
+  broadcastManager.registerClient(telegramClient);
+  
+  // Initialize WebSocket server for macOS and other clients
+  const wsGateway = new WebSocketGateway(broadcastManager, 3456);
 
   // Wire up Pi events for logging
   pi.on("event", (event) => {
@@ -66,6 +73,13 @@ async function main(): Promise<void> {
 
   pi.on("exit", (code) => {
     console.log(`[Pi] Process exited with code ${code}`);
+    // Auto-restart Pi if it crashes
+    console.log("[Gateway] Restarting Pi RPC in 2 seconds...");
+    setTimeout(() => {
+      pi.start().catch((err) => {
+        console.error("[Gateway] Failed to restart Pi RPC:", err);
+      });
+    }, 2000);
   });
 
   pi.on("error", (err) => {
@@ -75,54 +89,33 @@ async function main(): Promise<void> {
   // Set up session management (archival on compaction)
   sessionManager.setupEventHandlers();
 
-  // Session watcher (lock file-based TUI detection)
-  const sessionWatcher = new SessionWatcher(
-    config.pi.sessionPath,
-    config.tui.lockPath,
-  );
-
-  sessionWatcher.on(async (event) => {
-    if (event.type === "tui-detected") {
-      if (pi.isRunning) {
-        try { pi.abort(); } catch { /* ignore */ }
-        pi.stop();
-        console.log("[Gateway] Pi RPC stopped (TUI now owns session)");
-      }
-    } else if (event.type === "tui-gone") {
-      console.log("[Gateway] TUI closed, restarting Pi RPC...");
-      await pi.start();
-      console.log("[Gateway] Pi RPC ready");
+  // Start Pi RPC (Gateway owns the session now)
+  console.log("[Gateway] Starting Pi RPC...");
+  await pi.start(config.pi.thinkingLevel);
+  console.log("[Gateway] Pi RPC ready");
+  
+  // Set thinking level via RPC if specified
+  if (config.pi.thinkingLevel && config.pi.thinkingLevel !== "off") {
+    try {
+      await pi.setThinkingLevel(config.pi.thinkingLevel);
+    } catch (err) {
+      console.warn("[Gateway] Failed to set thinking level:", err);
     }
-  });
-
-  // Check initial TUI status before starting Pi
-  const initialStatus = await sessionWatcher.checkStatus();
-  sessionWatcher.start();
-
-  if (initialStatus === "active") {
-    console.log("[Gateway] TUI active at startup — Pi RPC not started");
-  } else {
-    console.log("[Gateway] Starting Pi RPC...");
-    await pi.start();
-    console.log("[Gateway] Pi RPC ready");
   }
+
+  // Start WebSocket server
+  console.log("[Gateway] Starting WebSocket server...");
+  await wsGateway.start();
 
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
     console.log(`[Telegram] Incoming message: ${text.slice(0, 100)}`);
-
-    if (sessionWatcher.isTuiActive) {
-      console.log("[Gateway] TUI active — blocking Telegram message");
-      return "⚠️ TUI is active on this session. Send /takeover to reclaim.";
-    }
-
-    if (!pi.isRunning) {
-      console.log("[Gateway] Pi RPC not running, starting...");
-      await pi.start();
-      console.log("[Gateway] Pi RPC ready");
-    }
-
-    await handlePrompt(text, ctx, pi, telegram);
+    
+    // Set context so TelegramClient knows where to send responses
+    telegramClient.setContext(ctx);
+    
+    // Send prompt via BroadcastManager (will broadcast to all clients)
+    await broadcastManager.sendPrompt(text, "telegram");
   });
 
   // Wire up /status command
@@ -136,14 +129,17 @@ async function main(): Promise<void> {
 
   // Wire up /new command (wired after memoryWatcher init below)
 
-  // Wire up /takeover command
-  telegram.onTakeover(async () => handleTakeover(pi, sessionWatcher));
+  // Wire up /takeover command (now just for info - TUI handoff removed)
+  telegram.onTakeover(async () => {
+    return "Gateway owns the session. Native TUI is not available while Gateway is running.";
+  });
 
   // Start heartbeat (proactive agent check-ins)
   const heartbeat = new Heartbeat(pi, (response) => {
-    // Agent has something proactive to say - send to Telegram
-    telegram.sendMessage(response).catch((err) => {
-      console.error("[Gateway] Failed to send heartbeat response:", err);
+    // Agent has something proactive to say - broadcast to all clients
+    broadcastManager.broadcast({
+      type: "proactive",
+      data: { message: response },
     });
   }, config.pi.cwd, { intervalMs: config.heartbeat.intervalMs });
   heartbeat.start();
@@ -173,13 +169,16 @@ async function main(): Promise<void> {
   // Start Telegram bot
   console.log("[Gateway] Starting Telegram bot...");
   await telegram.start();
+  
+  console.log("[Gateway] All systems operational");
+  console.log(`[Gateway] Connected clients: ${broadcastManager.getClientCount()}`);
 
   // Graceful shutdown
   const shutdown = () => {
     console.log("\n[Gateway] Shutting down...");
-    sessionWatcher.stop();
-    memoryWatcher.stop();
     heartbeat.stop();
+    memoryWatcher.stop();
+    wsGateway.stop();
     telegram.stop();
     pi.stop();
     process.exit(0);

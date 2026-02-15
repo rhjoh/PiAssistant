@@ -50,7 +50,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     return this.sendAndWait({ type: "switch_session", sessionPath });
   }
 
-  async start(): Promise<void> {
+  async start(thinkingLevel?: string): Promise<void> {
     if (this.isRunning) {
       return;
     }
@@ -59,6 +59,11 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     // Let Pi restore model from session's model_change entry
     // We'll send set_model via RPC after Pi is ready if needed
     const args = ["--mode", "rpc", "--session", this.sessionPath];
+    
+    // Add thinking level if specified (for models that support it)
+    if (thinkingLevel && thinkingLevel !== "off") {
+      args.push("--thinking", thinkingLevel);
+    }
 
     this.process = spawn("pi", args, {
       cwd: this.cwd,
@@ -119,6 +124,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
           if (event.assistantMessageEvent.type === "text_delta") {
             this.currentText += event.assistantMessageEvent.delta;
             this.emit("text", this.currentText);
+          } else if (event.assistantMessageEvent.type === "text_done") {
+            // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
+            this.currentText = event.assistantMessageEvent.text;
+            this.emit("text", this.currentText);
           }
         } else if (event.type === "agent_end") {
           cleanup();
@@ -135,6 +144,78 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.on("error", onError);
 
       this.send({ type: "prompt", message, id });
+    });
+  }
+
+  /**
+   * Send a prompt with image attachments.
+   * Images should be base64-encoded strings with their mime types.
+   */
+  async promptWithImages(
+    message: string,
+    images: { data: string; mimeType: string }[]
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (!this.isRunning) {
+        reject(new Error("Pi RPC not running"));
+        return;
+      }
+
+      const id = `req-${++this.requestId}`;
+      this.currentText = "";
+
+      const cleanup = () => {
+        this.off("event", onEvent);
+        this.off("error", onError);
+      };
+
+      const onEvent = (event: PiEvent) => {
+        if (event.type === "message_update") {
+          if (event.assistantMessageEvent.type === "text_delta") {
+            this.currentText += event.assistantMessageEvent.delta;
+            this.emit("text", this.currentText);
+          } else if (event.assistantMessageEvent.type === "text_done") {
+            // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
+            this.currentText = event.assistantMessageEvent.text;
+            this.emit("text", this.currentText);
+          }
+        } else if (event.type === "agent_end") {
+          cleanup();
+          resolve(this.currentText);
+        }
+      };
+
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+
+      this.on("event", onEvent);
+      this.on("error", onError);
+
+      // Format images for Pi RPC protocol
+      const imageContents = images.map((img) => ({
+        type: "image" as const,
+        data: img.data,
+        mimeType: img.mimeType,
+      }));
+
+      // Log the full JSON being sent (first 500 chars to avoid huge logs)
+      const payload = {
+        type: "prompt",
+        message,
+        images: imageContents.map(img => ({ ...img, data: img.data.substring(0, 100) + "..." })),
+        id,
+      };
+      console.log(`[Pi RPC] Sending prompt with ${images.length} image(s):`);
+      console.log(`[Pi RPC] Payload preview:`, JSON.stringify(payload).substring(0, 500));
+
+      this.send({
+        type: "prompt",
+        message,
+        images: imageContents,
+        id,
+      });
     });
   }
 
@@ -162,6 +243,22 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     }
 
     console.log(`[Pi RPC] Model set to ${provider}/${modelId}`);
+  }
+
+  /**
+   * Set thinking level for models that support it (off, minimal, low, medium, high, xhigh)
+   */
+  async setThinkingLevel(level: string): Promise<void> {
+    const response = await this.sendAndWait({
+      type: "set_thinking_level",
+      level,
+    });
+
+    if (!response.success) {
+      throw new Error(response.error ?? "Failed to set thinking level");
+    }
+
+    console.log(`[Pi RPC] Thinking level set to ${level}`);
   }
 
   /**

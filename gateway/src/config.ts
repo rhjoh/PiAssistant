@@ -20,6 +20,7 @@ export const config = {
       process.env.PI_SESSION_PATH ??
       join(homedir(), ".pi", "agent", "sessions", "main.jsonl"),
     cwd: process.env.PI_CWD ?? homedir(),
+    thinkingLevel: process.env.PI_THINKING_LEVEL ?? "off",
   },
   heartbeat: {
     intervalMs: process.env.HEARTBEAT_INTERVAL_MS
