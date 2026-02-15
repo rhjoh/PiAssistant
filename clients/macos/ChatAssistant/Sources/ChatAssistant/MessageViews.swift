@@ -346,6 +346,7 @@ struct ToolCallView: View {
                         .foregroundColor(.secondary)
                     Text(formatJSON(arguments))
                         .font(.system(size: 11 * zoomLevel, design: .monospaced))
+                        .textSelection(.enabled)
                         .padding(8 * zoomLevel)
                         .background(Color.black.opacity(0.05))
                         .cornerRadius(6)
@@ -447,6 +448,7 @@ struct ToolResultView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8 * zoomLevel) {
+            // Header - tap to expand/collapse
             HStack {
                 Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
                     .font(.system(size: 16 * zoomLevel))
@@ -471,17 +473,22 @@ struct ToolResultView: View {
                     .foregroundColor(.secondary)
                     .font(.system(size: 11 * zoomLevel))
             }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            }
             
             if isExpanded {
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(content)
-                        .font(.system(size: 13 * zoomLevel, design: .monospaced))
-                        .lineLimit(20)
-                        .padding(10 * zoomLevel)
-                        .textSelection(.enabled)
-                }
-                .background(Color.black.opacity(0.06))
-                .cornerRadius(8)
+                Text(content)
+                    .font(.system(size: 13 * zoomLevel, design: .monospaced))
+                    .lineLimit(20)
+                    .padding(10 * zoomLevel)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.06))
+                    .cornerRadius(8)
             }
         }
         .padding(12 * zoomLevel)
@@ -491,11 +498,6 @@ struct ToolResultView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isError ? Color.red.opacity(0.2) : Color.green.opacity(0.2), lineWidth: 1)
         )
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isExpanded.toggle()
-            }
-        }
     }
 
     private func copyToClipboard() {
