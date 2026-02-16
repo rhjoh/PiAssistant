@@ -710,7 +710,7 @@ struct ChatView: View {
                             text: $viewModel.inputText,
                             placeholder: viewModel.imageAttachments.isEmpty ? "Message..." : "Add a message or send images...",
                             onSubmit: {
-                                if !viewModel.showCommandPopup && !viewModel.isStreaming {
+                                if !viewModel.isStreaming {
                                     sendMessageFromUI()
                                 }
                             }
