@@ -641,6 +641,7 @@ struct ConnectionStatusView: View {
 struct CommandPopup: View {
     let commands: [SlashCommand]
     let selectedIndex: Int
+    let zoomLevel: Double
     let onSelect: (SlashCommand) -> Void
     
     var body: some View {
@@ -648,7 +649,8 @@ struct CommandPopup: View {
             ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
                 CommandRow(
                     command: command,
-                    isSelected: index == selectedIndex
+                    isSelected: index == selectedIndex,
+                    zoomLevel: zoomLevel
                 )
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -657,43 +659,44 @@ struct CommandPopup: View {
                 
                 if index < commands.count - 1 {
                     Divider()
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 8 * zoomLevel)
                 }
             }
         }
         .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(10)
-        .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: -4)
-        .frame(maxHeight: 280)
+        .cornerRadius(10 * zoomLevel)
+        .shadow(color: .black.opacity(0.15), radius: 8 * zoomLevel, x: 0, y: -4 * zoomLevel)
+        .frame(maxHeight: 280 * zoomLevel)
     }
 }
 
 struct CommandRow: View {
     let command: SlashCommand
     let isSelected: Bool
+    let zoomLevel: Double
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 12 * zoomLevel) {
             Image(systemName: "command")
-                .font(.system(size: 14))
+                .font(.system(size: 14 * zoomLevel))
                 .foregroundColor(isSelected ? .white : .blue)
-                .frame(width: 24)
+                .frame(width: 24 * zoomLevel)
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2 * zoomLevel) {
                 Text(command.usage)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13 * zoomLevel, weight: .semibold))
                     .foregroundColor(isSelected ? .white : .primary)
                 
                 Text(command.description)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11 * zoomLevel))
                     .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
                     .lineLimit(1)
             }
             
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12 * zoomLevel)
+        .padding(.vertical, 8 * zoomLevel)
         .background(isSelected ? Color.blue : Color.clear)
     }
 }

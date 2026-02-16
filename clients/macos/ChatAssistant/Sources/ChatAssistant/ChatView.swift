@@ -689,6 +689,7 @@ struct ChatView: View {
                     ImageAttachmentBar(
                         attachments: viewModel.imageAttachments,
                         totalSize: viewModel.totalAttachmentSizeFormatted,
+                        zoomLevel: settings.zoomLevel,
                         onRemove: { id in
                             viewModel.removeImageAttachment(id: id)
                         },
@@ -704,11 +705,12 @@ struct ChatView: View {
                 // Input field with drag & drop support
                 ZStack(alignment: .bottomLeading) {
                     // Input field
-                    HStack(alignment: .bottom, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
                         // Auto-growing text field
                         AutoGrowingTextField(
                             text: $viewModel.inputText,
                             placeholder: viewModel.imageAttachments.isEmpty ? "Message..." : "Add a message or send images...",
+                            zoomLevel: settings.zoomLevel,
                             onSubmit: {
                                 if !viewModel.isStreaming {
                                     sendMessageFromUI()
@@ -728,7 +730,6 @@ struct ChatView: View {
                         .keyboardShortcut(.return, modifiers: [])
                         .buttonStyle(.borderless)
                         .disabled(!viewModel.canSend && !viewModel.isStreaming)
-                        .padding(.bottom, 4)
                     }
                     .padding()
                     
@@ -737,6 +738,7 @@ struct ChatView: View {
                         CommandPopup(
                             commands: viewModel.filteredCommands,
                             selectedIndex: viewModel.selectedCommandIndex,
+                            zoomLevel: settings.zoomLevel,
                             onSelect: { command in
                                 viewModel.inputText = command.usage
                                 viewModel.showCommandPopup = false
@@ -867,52 +869,76 @@ struct ChatView: View {
     }
 }
 
+// MARK: - Auto Growing Text Field
+struct AutoGrowingTextField: View {
+    @Binding var text: String
+    var placeholder: String
+    var zoomLevel: Double = 1.0
+    var onSubmit: () -> Void
+
+    var body: some View {
+        TextField(placeholder, text: $text, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...6)
+            .font(.system(size: 14 * zoomLevel))
+            .onSubmit {
+                onSubmit()
+            }
+            .padding(10 * zoomLevel)
+            .background(Color.gray.opacity(0.12))
+            .cornerRadius(12 * zoomLevel)
+    }
+}
+
 // MARK: - Image Attachment Bar Component
 struct ImageAttachmentBar: View {
     let attachments: [ImageAttachment]
     let totalSize: String
+    let zoomLevel: Double
     let onRemove: (UUID) -> Void
     let onClear: () -> Void
     
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 6 * zoomLevel) {
             // Thumbnails row
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 8 * zoomLevel) {
                     ForEach(attachments) { attachment in
                         ImageAttachmentThumbnail(
                             attachment: attachment,
+                            zoomLevel: zoomLevel,
                             onRemove: { onRemove(attachment.id) }
                         )
                     }
                 }
-                .padding(.horizontal, 4)
+                .padding(.horizontal, 4 * zoomLevel)
             }
-            .frame(height: 64)
+            .frame(height: 64 * zoomLevel)
             
             // Footer with size and clear button
             HStack {
                 Text("\(attachments.count) image\(attachments.count == 1 ? "" : "s") • \(totalSize)")
-                    .font(.caption)
+                    .font(.system(size: 12 * zoomLevel))
                     .foregroundColor(.secondary)
                 
                 Spacer()
                 
                 Button("Clear All", action: onClear)
-                    .font(.caption)
+                    .font(.system(size: 12 * zoomLevel))
                     .buttonStyle(.borderless)
                     .foregroundColor(.red)
             }
         }
-        .padding(8)
+        .padding(8 * zoomLevel)
         .background(Color.gray.opacity(0.08))
-        .cornerRadius(8)
+        .cornerRadius(8 * zoomLevel)
     }
 }
 
 // MARK: - Image Attachment Thumbnail
 struct ImageAttachmentThumbnail: View {
     let attachment: ImageAttachment
+    let zoomLevel: Double
     let onRemove: () -> Void
     @State private var isHovering = false
     
@@ -922,10 +948,10 @@ struct ImageAttachmentThumbnail: View {
             Image(nsImage: attachment.nsImage)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(width: 56 * zoomLevel, height: 56 * zoomLevel)
+                .clipShape(RoundedRectangle(cornerRadius: 6 * zoomLevel))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 6 * zoomLevel)
                         .stroke(Color.gray.opacity(0.2), lineWidth: 1)
                 )
             
@@ -933,12 +959,12 @@ struct ImageAttachmentThumbnail: View {
             if isHovering {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
+                        .font(.system(size: 16 * zoomLevel))
                         .foregroundColor(.red)
                         .background(Color.white.clipShape(Circle()))
                 }
                 .buttonStyle(.borderless)
-                .offset(x: 6, y: -6)
+                .offset(x: 6 * zoomLevel, y: -6 * zoomLevel)
                 .transition(.scale)
             }
         }
