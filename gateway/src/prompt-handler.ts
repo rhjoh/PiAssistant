@@ -164,8 +164,6 @@ export async function handlePrompt(
 
   // Track whether we're mid-tool (suppress streamed text that is tool output)
   let insideTool = false;
-  // Length of currentText to skip (accumulated during tool execution)
-  let proseStartOffset = 0;
 
   const onPiEvent = (event: PiEvent) => {
     if (event.type === "tool_execution_start") {
@@ -205,9 +203,6 @@ export async function handlePrompt(
       // If tools can ever overlap, only exit "insideTool" when none are active.
       // IMPORTANT: don't delete from the map until after we edit the tool message.
       if (currentToolCallId === event.toolCallId) currentToolCallId = null;
-
-      // Mark current accumulated text length as "skip" — everything up to here is tool output
-      proseStartOffset = pi.currentTextLength;
 
       const resultText = extractToolResultText(
         "result" in event ? (event as Record<string, unknown>).result : null
@@ -259,9 +254,7 @@ export async function handlePrompt(
     // While inside a tool execution, ignore streamed text (it's tool output, not prose)
     if (insideTool) return;
 
-    // Strip any text that was accumulated during tool execution
-    const proseOnly = proseStartOffset > 0 ? currentText.slice(proseStartOffset) : currentText;
-    const trimmed = proseOnly.trim();
+    const trimmed = currentText.trim();
     if (!trimmed) return;
 
     // First text after tools — send initial message
@@ -337,9 +330,7 @@ export async function handlePrompt(
       pendingEdit = null;
     }
 
-    // Final response — the prose part only (strip tool output prefix)
-    const proseResponse = proseStartOffset > 0 ? response.slice(proseStartOffset) : response;
-    const trimmedResponse = proseResponse.trim();
+    const trimmedResponse = response.trim();
 
     if (responseMessageId !== null && trimmedResponse && trimmedResponse !== lastEditedText) {
       if (trimmedResponse.length <= 4000) {

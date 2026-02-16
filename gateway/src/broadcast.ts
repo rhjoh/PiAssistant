@@ -190,19 +190,19 @@ export class BroadcastManager {
   private setupPiListeners(): void {
     // Track accumulated text for final response
     let currentText = "";
-    let proseStartOffset = 0;
     let insideTool = false;
     let currentThinking = "";
-    let isThinking = false;
+    const lastToolOutputById = new Map<string, string>();
+    let eventQueue: Promise<void> = Promise.resolve();
 
-    this.pi.on("event", (event: PiEvent) => {
+    const handlePiEvent = async (event: PiEvent): Promise<void> => {
       // Handle tool execution events
       if (event.type === "tool_execution_start") {
         insideTool = true;
-        
+
         const label = this.formatToolLabel(event.toolName || "tool", event.args);
-        
-        this.broadcast({
+
+        await this.broadcast({
           type: "tool_start",
           data: {
             toolCallId: event.toolCallId,
@@ -211,17 +211,43 @@ export class BroadcastManager {
             label,
           },
         });
+
+        // Create tool result block immediately so user can see live updates/abort context.
+        await this.broadcast({
+          type: "tool_output",
+          data: {
+            toolCallId: event.toolCallId,
+            output: "",
+            truncated: false,
+          },
+        });
+        lastToolOutputById.set(event.toolCallId, "");
+      }
+
+      if (event.type === "tool_execution_update") {
+        const outputText = this.extractToolResultText(event.partialResult);
+        const truncated = this.truncateToolOutput(outputText);
+        const prev = lastToolOutputById.get(event.toolCallId) ?? "";
+
+        if (truncated.text !== prev) {
+          lastToolOutputById.set(event.toolCallId, truncated.text);
+          await this.broadcast({
+            type: "tool_output",
+            data: {
+              toolCallId: event.toolCallId,
+              output: truncated.text,
+              truncated: truncated.wasTruncated,
+            },
+          });
+        }
       }
 
       if (event.type === "tool_execution_end") {
-        // Mark prose offset
-        proseStartOffset = currentText.length;
-        
         const result = "result" in event ? (event as Record<string, unknown>).result : null;
 
         const images = this.extractImagesFromToolResult(result);
         for (const image of images) {
-          this.broadcast({
+          await this.broadcast({
             type: "image",
             data: {
               source: image.source,
@@ -233,7 +259,7 @@ export class BroadcastManager {
         const outputText = this.extractToolResultText(result);
         const truncated = this.truncateToolOutput(outputText);
 
-        this.broadcast({
+        await this.broadcast({
           type: "tool_output",
           data: {
             toolCallId: event.toolCallId,
@@ -241,8 +267,9 @@ export class BroadcastManager {
             truncated: truncated.wasTruncated,
           },
         });
+        lastToolOutputById.delete(event.toolCallId);
 
-        this.broadcast({
+        await this.broadcast({
           type: "tool_end",
           data: {
             toolCallId: event.toolCallId,
@@ -263,7 +290,7 @@ export class BroadcastManager {
           // Only broadcast prose deltas (not tool output)
           if (!insideTool) {
             console.log(`[Broadcast] text_delta: "${msgEvent.delta.slice(0, 50)}${msgEvent.delta.length > 50 ? "..." : ""}"`);
-            this.broadcast({
+            await this.broadcast({
               type: "text_delta",
               data: { content: msgEvent.delta },
             });
@@ -277,16 +304,14 @@ export class BroadcastManager {
 
         if (msgEvent.type === "thinking_delta") {
           currentThinking += msgEvent.delta;
-          isThinking = true;
-          this.broadcast({
+          await this.broadcast({
             type: "thinking_delta",
             data: { content: msgEvent.delta },
           });
         }
 
         if (msgEvent.type === "thinking_done") {
-          isThinking = false;
-          this.broadcast({
+          await this.broadcast({
             type: "thinking_done",
             data: { content: currentThinking },
           });
@@ -296,13 +321,11 @@ export class BroadcastManager {
 
       // Handle completion
       if (event.type === "agent_end") {
-        const proseResponse = proseStartOffset > 0 
-          ? currentText.slice(proseStartOffset) 
-          : currentText;
+        const proseResponse = currentText;
 
         const imageExtractions = this.extractMarkdownImages(proseResponse);
         for (const image of imageExtractions.images) {
-          this.broadcast({
+          await this.broadcast({
             type: "image",
             data: {
               source: image.source,
@@ -316,17 +339,24 @@ export class BroadcastManager {
         const usage = this.extractTokenUsage(messages);
 
         console.log(`[Broadcast] done: ${imageExtractions.textOnly.slice(0, 100)}${imageExtractions.textOnly.length > 100 ? '...' : ''}`);
-        this.broadcast({
+        await this.broadcast({
           type: "done",
           data: { finalText: imageExtractions.textOnly, usage },
         });
 
         // Reset state for next prompt
         currentText = "";
-        proseStartOffset = 0;
         insideTool = false;
         this.currentPrompt = null;
       }
+    };
+
+    this.pi.on("event", (event: PiEvent) => {
+      eventQueue = eventQueue
+        .then(() => handlePiEvent(event))
+        .catch((err) => {
+          console.error("[Broadcast] Failed processing Pi event:", err);
+        });
     });
   }
 
