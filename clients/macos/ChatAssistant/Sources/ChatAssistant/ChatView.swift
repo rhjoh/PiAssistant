@@ -1131,6 +1131,11 @@ struct ViewModifiers: NSViewRepresentable {
                 return nil // Consume the event
             }
             
+            // Intercept Ctrl+O to prevent it from inserting newlines (default macOS Emacs binding)
+            if event.modifierFlags.contains(.control) && event.charactersIgnoringModifiers?.lowercased() == "o" {
+                return nil // Consume the event silently
+            }
+            
             // Check for Command+ shortcuts
             if event.modifierFlags.contains(.command) {
                 switch event.charactersIgnoringModifiers {
