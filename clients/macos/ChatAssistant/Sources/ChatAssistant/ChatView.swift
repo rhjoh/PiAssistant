@@ -172,11 +172,13 @@ class ChatViewModel: ObservableObject {
             addSystemMessage("Requested status...")
             return
             
-        case "/model", "/session", "/new", "/takeover":
-            // Commands that expect a response from the gateway
+        case "/new":
+            messages.removeAll()
+            fallthrough
+            
+        case "/model", "/session", "/takeover":
             isStreaming = true
             
-            // Create assistant placeholder for the response
             let assistantMessage = ChatMessage(
                 role: .assistant,
                 items: [.thinking("", isComplete: false)],
@@ -184,7 +186,7 @@ class ChatViewModel: ObservableObject {
             )
             messages.append(assistantMessage)
             
-            let commandName = String(cmd.dropFirst()) // Remove the leading /
+            let commandName = String(cmd.dropFirst())
             let commandMessage = WSClientMessage.command(command: commandName, args: args.isEmpty ? nil : [args])
             chatService.send(commandMessage)
             
