@@ -246,6 +246,27 @@ class ChatService: NSObject, ObservableObject {
 
             guard let role = role else { return nil }
 
+            // Handle toolResult messages specially - they're separate messages in Pi's session
+            if role == "toolResult" {
+                if let toolCallId = dict["toolCallId"] as? String,
+                   let toolName = dict["toolName"] as? String {
+                    var contentText = ""
+                    if let contentStr = content as? String {
+                        contentText = contentStr
+                    } else if let contentArr = content as? [[String: Any]] {
+                        for contentPart in contentArr {
+                            if let text = contentPart["text"] as? String {
+                                contentText += text
+                            }
+                        }
+                    }
+                    let isError = dict["isError"] as? Bool ?? false
+                    let item: ContentItem = .toolResult(toolCallId: toolCallId, toolName: toolName, content: contentText, isError: isError)
+                    return ChatMessage(role: .assistant, items: [item], isStreaming: false)
+                }
+                return nil
+            }
+
             let messageRole: MessageRole = role == "user" ? .user : .assistant
             var items: [ContentItem] = []
 
@@ -260,32 +281,30 @@ class ChatService: NSObject, ObservableObject {
                         continue
                     }
 
-                    if type == "toolCall" || type == "tool_call" || type == "toolUse" {
-                        if let id = part["id"] as? String ?? part["toolCallId"] as? String,
-                           let name = part["name"] as? String ?? part["toolName"] as? String {
-                            let arguments = part["arguments"] as? String ?? ""
-                            items.append(.toolCall(id: id, name: name, arguments: arguments))
-                        }
+                    if type == "thinking", let thinking = part["thinking"] as? String {
+                        items.append(.thinking(thinking, isComplete: true))
                         continue
                     }
 
-                    if type == "toolResult" || type == "tool_result" {
-                        if let toolCallId = part["toolCallId"] as? String,
-                           let toolName = part["toolName"] as? String {
-                            // Extract content from array or string
-                            var contentText = ""
-                            if let contentStr = part["content"] as? String {
-                                contentText = contentStr
-                            } else if let contentArr = part["content"] as? [[String: Any]] {
-                                // Pi stores tool result content as array of parts
-                                for contentPart in contentArr {
-                                    if let text = contentPart["text"] as? String {
-                                        contentText += text
-                                    }
+                    if type == "toolCall" || type == "tool_call" || type == "toolUse" {
+                        if let id = part["id"] as? String ?? part["toolCallId"] as? String,
+                           let name = part["name"] as? String ?? part["toolName"] as? String {
+                            // Arguments can be a string or an object - convert object to JSON string
+                            let arguments: String
+                            if let argsString = part["arguments"] as? String {
+                                arguments = argsString
+                            } else if let argsObj = part["arguments"] as? [String: Any] {
+                                // Convert object to JSON string
+                                if let jsonData = try? JSONSerialization.data(withJSONObject: argsObj, options: .sortedKeys),
+                                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                                    arguments = jsonString
+                                } else {
+                                    arguments = ""
                                 }
+                            } else {
+                                arguments = ""
                             }
-                            let isError = part["isError"] as? Bool ?? false
-                            items.append(.toolResult(toolCallId: toolCallId, toolName: toolName, content: contentText, isError: isError))
+                            items.append(.toolCall(id: id, name: name, arguments: arguments))
                         }
                         continue
                     }
