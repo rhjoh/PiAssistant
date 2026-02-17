@@ -49,7 +49,7 @@ export const config = {
       ? parseInt(process.env.MEMORY_ACTIVE_WINDOW_MINUTES, 10) * 60 * 1000
       : 60 * 60 * 1000, // 60 minutes default
     memoryPromptPath: process.env.MEMORY_PROMPT_PATH
-      ?? join(process.env.PI_CWD ?? homedir(), "memory-prompt.md"),
+      ?? join(process.env.PI_CWD ?? homedir(), "prompts", "memory-prompt.md"),
   },
 };
 

@@ -1,5 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { BroadcastManager } from "./broadcast.js";
 import type { Client, WSClientMessage, WSServerMessage } from "./types-ws.js";
@@ -369,6 +369,11 @@ export class WebSocketGateway {
   private async readSessionHistory(limit: number): Promise<unknown[]> {
     const sessionPath = config.pi.sessionPath;
     const messages: unknown[] = [];
+
+    // If session file doesn't exist yet, return empty history (Pi hasn't created it)
+    if (!existsSync(sessionPath)) {
+      return messages;
+    }
 
     try {
       const fileStream = createReadStream(sessionPath);

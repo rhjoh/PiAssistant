@@ -1,4 +1,7 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
+import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 
 import { handleStatus, handleModel, handleSession, handleNew, handleTakeover } from "./commands.js";
 import { PiRpcClient } from "./pi-rpc.js";
@@ -33,6 +36,13 @@ async function main(): Promise<void> {
   console.log(`[Gateway] Pi session: ${config.pi.sessionPath}`);
   console.log(`[Gateway] Thinking level: ${config.pi.thinkingLevel}`);
   console.log(`[Gateway] Architecture: Gateway owns Pi RPC (multi-client mode)`);
+
+  // Ensure session directory exists
+  const sessionDir = dirname(config.pi.sessionPath);
+  if (!existsSync(sessionDir)) {
+    await mkdir(sessionDir, { recursive: true });
+    console.log(`[Gateway] Created session directory: ${sessionDir}`);
+  }
 
   // Initialize Pi RPC client (will run continuously)
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);

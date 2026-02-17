@@ -24,7 +24,7 @@ export class Heartbeat {
     options: HeartbeatOptions = {}
   ) {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
-    this.heartbeatFile = options.heartbeatFile ?? "heartbeat.md";
+    this.heartbeatFile = options.heartbeatFile ?? "prompts/heartbeat.md";
   }
 
   start(): void {
