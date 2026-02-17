@@ -260,6 +260,36 @@ class ChatService: NSObject, ObservableObject {
                         continue
                     }
 
+                    if type == "toolCall" || type == "tool_call" || type == "toolUse" {
+                        if let id = part["id"] as? String ?? part["toolCallId"] as? String,
+                           let name = part["name"] as? String ?? part["toolName"] as? String {
+                            let arguments = part["arguments"] as? String ?? ""
+                            items.append(.toolCall(id: id, name: name, arguments: arguments))
+                        }
+                        continue
+                    }
+
+                    if type == "toolResult" || type == "tool_result" {
+                        if let toolCallId = part["toolCallId"] as? String,
+                           let toolName = part["toolName"] as? String {
+                            // Extract content from array or string
+                            var contentText = ""
+                            if let contentStr = part["content"] as? String {
+                                contentText = contentStr
+                            } else if let contentArr = part["content"] as? [[String: Any]] {
+                                // Pi stores tool result content as array of parts
+                                for contentPart in contentArr {
+                                    if let text = contentPart["text"] as? String {
+                                        contentText += text
+                                    }
+                                }
+                            }
+                            let isError = part["isError"] as? Bool ?? false
+                            items.append(.toolResult(toolCallId: toolCallId, toolName: toolName, content: contentText, isError: isError))
+                        }
+                        continue
+                    }
+
                     if let imageSource = extractImageSource(from: part) {
                         items.append(.image(source: imageSource))
                     }

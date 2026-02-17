@@ -107,8 +107,9 @@ struct MessageView: View {
     
     private func textBubble(text: String) -> some View {
         let normalized = normalizeLineBreaks(text)
+        let escaped = escapeMarkdownLineStart(normalized)
 
-        return renderedMarkdownPreservingNewlines(normalized)
+        return renderedMarkdownPreservingNewlines(escaped)
             .font(.system(size: 14 * zoomLevel))
             .padding(12 * zoomLevel)
             .background(message.role == .user ? Color.blue : Color.gray.opacity(0.15))
@@ -122,6 +123,32 @@ struct MessageView: View {
             .replacingOccurrences(of: "\r\n", with: "\n")
             // Handle literal escaped newlines coming from transport/model text
             .replacingOccurrences(of: "\\n", with: "\n")
+    }
+    
+    /// Escape Markdown special characters at line start to preserve formatting
+    private func escapeMarkdownLineStart(_ text: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let str = String(line)
+                let trimmed = str
+                
+                // Escape > at start to prevent blockquote parsing
+                if trimmed.hasPrefix("> ") {
+                    return "\\" + str
+                }
+                
+                // Escape number. at start to prevent ordered list parsing
+                if let match = trimmed.range(of: "^\\s*\\d+\\.", options: .regularExpression) {
+                    let beforeNumber = String(str[..<match.lowerBound])
+                    let numberPart = String(str[match.lowerBound..<match.upperBound])
+                    let afterNumber = String(str[match.upperBound...])
+                    return beforeNumber + numberPart.replacingOccurrences(of: ".", with: "\\.") + afterNumber
+                }
+                
+                return str
+            }
+            .joined(separator: "\n")
     }
 
     private func renderedMarkdownPreservingNewlines(_ text: String) -> Text {

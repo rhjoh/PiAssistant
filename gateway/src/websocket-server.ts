@@ -399,21 +399,20 @@ export class WebSocketGateway {
             continue;
           }
 
-          // For tool results, only keep lightweight image history items
-          // to avoid oversized WebSocket history payloads.
+          // For tool results, include all content but sanitize any images
           if (role === "toolResult") {
-            const sanitizedImageContent = this.sanitizeToolResultImageContent(entry.message);
-            if (sanitizedImageContent.length > 0) {
-              messages.push({
-                id: entry.id,
-                role,
-                content: sanitizedImageContent,
-                timestamp: entry.timestamp,
-                toolCallId: entry.message.toolCallId,
-                toolName: entry.message.toolName,
-                isError: entry.message.isError,
-              });
-            }
+            const sanitizedContent = await this.imageStorage.sanitizeForHistory(
+              entry.message.content
+            );
+            messages.push({
+              id: entry.id,
+              role,
+              content: sanitizedContent,
+              timestamp: entry.timestamp,
+              toolCallId: entry.message.toolCallId,
+              toolName: entry.message.toolName,
+              isError: entry.message.isError,
+            });
           }
         } catch {
           // Skip invalid lines
