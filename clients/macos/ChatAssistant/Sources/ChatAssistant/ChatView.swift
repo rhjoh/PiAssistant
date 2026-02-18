@@ -21,6 +21,9 @@ class ChatViewModel: ObservableObject {
     // Image attachments
     @Published var imageAttachments: [ImageAttachment] = []
     
+    // Track the streaming message ID to handle race conditions with history loading
+    private var streamingMessageId: UUID?
+    
     let chatService = ChatService()
     
     // Maximum total attachment size (5MB)
@@ -28,6 +31,16 @@ class ChatViewModel: ObservableObject {
     
     var canSend: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !imageAttachments.isEmpty
+    }
+    
+    /// Returns the index of the streaming message if it exists, otherwise falls back to last index
+    private func streamingMessageIndex() -> Array<ChatMessage>.Index? {
+        if let streamingId = streamingMessageId,
+           let index = messages.firstIndex(where: { $0.id == streamingId }) {
+            return index
+        }
+        // Fallback: if not streaming or ID not found, use last index
+        return messages.indices.last
     }
     
     var filteredCommands: [SlashCommand] {
@@ -88,6 +101,7 @@ class ChatViewModel: ObservableObject {
             isStreaming: true
         )
         messages.append(assistantMessage)
+        streamingMessageId = assistantMessage.id  // Track for safe updates during streaming
         
         // Send via WebSocket (with or without images)
         if attachmentsToSend.isEmpty {
@@ -146,9 +160,10 @@ class ChatViewModel: ObservableObject {
     func cancelStreaming() {
         chatService.abort()
         isStreaming = false
-        if let lastIndex = messages.indices.last {
-            messages[lastIndex].isStreaming = false
+        if let messageIndex = streamingMessageIndex() {
+            messages[messageIndex].isStreaming = false
         }
+        streamingMessageId = nil
     }
     
     // MARK: - Slash Commands
@@ -185,6 +200,7 @@ class ChatViewModel: ObservableObject {
                 isStreaming: true
             )
             messages.append(assistantMessage)
+            streamingMessageId = assistantMessage.id  // Track for safe updates
             
             let commandName = String(cmd.dropFirst())
             let commandMessage = WSClientMessage.command(command: commandName, args: args.isEmpty ? nil : [args])
@@ -269,10 +285,10 @@ extension ChatViewModel: ChatServiceDelegate {
     }
     
     func chatService(_ service: ChatService, didReceiveTextDelta delta: String) {
-        guard let lastIndex = messages.indices.last else { return }
+        guard let messageIndex = streamingMessageIndex() else { return }
         
         // Append text content to the message, preserving all existing items
-        appendTextContent(delta, in: lastIndex)
+        appendTextContent(delta, in: messageIndex)
     }
     
     /// Appends text content to the message, merging with existing content.
@@ -289,39 +305,39 @@ extension ChatViewModel: ChatServiceDelegate {
     }
     
     func chatService(_ service: ChatService, didReceiveThinkingDelta delta: String) {
-        guard let lastIndex = messages.indices.last else { return }
+        guard let messageIndex = streamingMessageIndex() else { return }
         
         isThinking = true
         
         // If the last item is an incomplete thinking block, append to it
-        if let lastItemIndex = messages[lastIndex].items.indices.last,
-           case .thinking(let existingText, let isComplete) = messages[lastIndex].items[lastItemIndex],
+        if let lastItemIndex = messages[messageIndex].items.indices.last,
+           case .thinking(let existingText, let isComplete) = messages[messageIndex].items[lastItemIndex],
            !isComplete {
-            messages[lastIndex].items[lastItemIndex] = .thinking(existingText + delta, isComplete: false)
+            messages[messageIndex].items[lastItemIndex] = .thinking(existingText + delta, isComplete: false)
         } else {
             // Otherwise add new thinking block
-            messages[lastIndex].items.append(.thinking(delta, isComplete: false))
+            messages[messageIndex].items.append(.thinking(delta, isComplete: false))
         }
     }
     
     func chatService(_ service: ChatService, didCompleteThinking content: String) {
-        guard let lastIndex = messages.indices.last else { return }
+        guard let messageIndex = streamingMessageIndex() else { return }
         
         isThinking = false
         
         // Find and mark the incomplete thinking block as complete
-        if let thinkingIndex = messages[lastIndex].items.indices.last(where: { index in
-            if case .thinking(_, let isComplete) = messages[lastIndex].items[index] {
+        if let thinkingIndex = messages[messageIndex].items.indices.last(where: { index in
+            if case .thinking(_, let isComplete) = messages[messageIndex].items[index] {
                 return !isComplete
             }
             return false
         }) {
-            messages[lastIndex].items[thinkingIndex] = .thinking(content, isComplete: true)
+            messages[messageIndex].items[thinkingIndex] = .thinking(content, isComplete: true)
         }
     }
     
     func chatService(_ service: ChatService, didStartToolCall id: String, name: String, args: Any?, label: String) {
-        guard let lastIndex = messages.indices.last else { return }
+        guard let messageIndex = streamingMessageIndex() else { return }
         
         // Serialize args to proper JSON string
         let argsString: String
@@ -335,25 +351,25 @@ extension ChatViewModel: ChatServiceDelegate {
         } else {
             argsString = "{}"
         }
-        messages[lastIndex].items.append(.toolCall(id: id, name: name, arguments: argsString))
+        messages[messageIndex].items.append(.toolCall(id: id, name: name, arguments: argsString))
     }
     
     func chatService(_ service: ChatService, didReceiveToolOutput id: String, output: String, truncated: Bool) {
-        guard let lastIndex = messages.indices.last else { return }
+        guard let messageIndex = streamingMessageIndex() else { return }
 
         let finalOutput = truncated ? output + "\n… (truncated)" : output
 
         // Update existing tool result if present (streaming), otherwise insert after the tool call.
-        if let existingResultIndex = messages[lastIndex].items.firstIndex(where: { item in
+        if let existingResultIndex = messages[messageIndex].items.firstIndex(where: { item in
             if case .toolResult(let toolCallId, _, _, _) = item {
                 return toolCallId == id
             }
             return false
         }) {
-            let toolName = getToolNameForResult(toolCallId: id, in: messages[lastIndex].items) ?? "tool"
+            let toolName = getToolNameForResult(toolCallId: id, in: messages[messageIndex].items) ?? "tool"
 
             let existingContent: String
-            if case .toolResult(_, _, let content, _) = messages[lastIndex].items[existingResultIndex] {
+            if case .toolResult(_, _, let content, _) = messages[messageIndex].items[existingResultIndex] {
                 existingContent = content
             } else {
                 existingContent = ""
@@ -361,7 +377,7 @@ extension ChatViewModel: ChatServiceDelegate {
 
             let mergedOutput = mergeToolOutput(existing: existingContent, incoming: finalOutput)
 
-            messages[lastIndex].items[existingResultIndex] = .toolResult(
+            messages[messageIndex].items[existingResultIndex] = .toolResult(
                 toolCallId: id,
                 toolName: toolName,
                 content: mergedOutput,
@@ -370,14 +386,14 @@ extension ChatViewModel: ChatServiceDelegate {
             return
         }
 
-        if let toolCallIndex = messages[lastIndex].items.firstIndex(where: { item in
+        if let toolCallIndex = messages[messageIndex].items.firstIndex(where: { item in
             if case .toolCall(let toolId, _, _) = item {
                 return toolId == id
             }
             return false
         }) {
-            let toolName = getToolName(from: messages[lastIndex].items[toolCallIndex])
-            messages[lastIndex].items.insert(
+            let toolName = getToolName(from: messages[messageIndex].items[toolCallIndex])
+            messages[messageIndex].items.insert(
                 .toolResult(toolCallId: id, toolName: toolName, content: finalOutput, isError: false),
                 at: toolCallIndex + 1
             )
@@ -389,8 +405,8 @@ extension ChatViewModel: ChatServiceDelegate {
     }
 
     func chatService(_ service: ChatService, didReceiveImage source: String, alt: String?) {
-        guard let lastIndex = messages.indices.last else { return }
-        messages[lastIndex].items.append(.image(source: source))
+        guard let messageIndex = streamingMessageIndex() else { return }
+        messages[messageIndex].items.append(.image(source: source))
     }
     
     func chatService(_ service: ChatService, didCompleteWithFinalText text: String, usage: TokenUsageData?) {
@@ -405,49 +421,88 @@ extension ChatViewModel: ChatServiceDelegate {
             currentTokenUsage.cacheWriteTokens += usage.cacheWrite ?? 0
         }
         
-        if let lastIndex = messages.indices.last {
-            messages[lastIndex].isStreaming = false
-            
-            // Replace accumulated text deltas with the properly formatted final text
-            // This fixes spacing issues that can occur with streaming deltas
-            var updatedItems: [ContentItem] = []
-            var foundText = false
-            
-            for item in messages[lastIndex].items {
-                switch item {
-                case .text:
-                    // Replace the first text item with the final text
-                    if !foundText {
-                        updatedItems.append(.text(text))
-                        foundText = true
-                    }
-                    // Skip any additional text items (they're duplicates from streaming)
-                case .thinking(let content, let isComplete):
-                    // Keep thinking blocks, mark incomplete as complete
-                    if !isComplete && !content.isEmpty {
-                        updatedItems.append(.thinking(content, isComplete: true))
-                    } else if !content.isEmpty {
-                        updatedItems.append(item)
-                    }
-                default:
-                    // Keep all other items (tool calls, results, images)
+        // Use streamingMessageIndex to find the correct message, even if history was loaded
+        guard let messageIndex = streamingMessageIndex(),
+              messages[messageIndex].isStreaming else {
+            // Clear the streaming ID even if we couldn't find the message
+            streamingMessageId = nil
+            return
+        }
+        
+        messages[messageIndex].isStreaming = false
+        streamingMessageId = nil  // Clear the tracking ID
+        
+        // Replace accumulated text deltas with the properly formatted final text
+        // This fixes spacing issues that can occur with streaming deltas
+        var updatedItems: [ContentItem] = []
+        var foundText = false
+        
+        for item in messages[messageIndex].items {
+            switch item {
+            case .text:
+                // Replace the first text item with the final text
+                if !foundText {
+                    updatedItems.append(.text(text))
+                    foundText = true
+                }
+                // Skip any additional text items (they're duplicates from streaming)
+            case .thinking(let content, let isComplete):
+                // Keep thinking blocks, mark incomplete as complete
+                if !isComplete && !content.isEmpty {
+                    updatedItems.append(.thinking(content, isComplete: true))
+                } else if !content.isEmpty {
                     updatedItems.append(item)
                 }
+            default:
+                // Keep all other items (tool calls, results, images)
+                updatedItems.append(item)
             }
-            
-            // If no text item was found, append the final text
-            if !foundText {
-                updatedItems.append(.text(text))
-            }
-            
-            messages[lastIndex].items = updatedItems
         }
+        
+        // If no text item was found, append the final text
+        if !foundText {
+            updatedItems.append(.text(text))
+        }
+        
+        messages[messageIndex].items = updatedItems
     }
 
     
     func chatService(_ service: ChatService, didReceiveHistory historyMessages: [ChatMessage]) {
-        // Prepend history to current messages (if any)
-        messages = historyMessages + messages
+        // Only add history messages that aren't already present
+        // Compare by role and first item content to detect duplicates
+        let newMessages = historyMessages.filter { historyMsg in
+            !messages.contains { existingMsg in
+                existingMsg.role == historyMsg.role && 
+                existingMsg.items.count == historyMsg.items.count &&
+                itemsEqual(existingMsg.items, historyMsg.items)
+            }
+        }
+        
+        if !newMessages.isEmpty {
+            messages = newMessages + messages
+        }
+    }
+    
+    private func itemsEqual(_ lhs: [ContentItem], _ rhs: [ContentItem]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (l, r) in zip(lhs, rhs) {
+            switch (l, r) {
+            case (.text(let lt), .text(let rt)):
+                if lt != rt { return false }
+            case (.thinking(let lc, let lcomp), .thinking(let rc, let rcomp)):
+                if lc != rc || lcomp != rcomp { return false }
+            case (.toolCall(let lid, let ln, let la), .toolCall(let rid, let rn, let ra)):
+                if lid != rid || ln != rn || la != ra { return false }
+            case (.toolResult(let ltid, let ltn, let lc, let le), .toolResult(let rtid, let rtn, let rc, let re)):
+                if ltid != rtid || ltn != rtn || lc != rc || le != re { return false }
+            case (.image(let ls), .image(let rs)):
+                if ls != rs { return false }
+            default:
+                return false
+            }
+        }
+        return true
     }
     
     func chatService(_ service: ChatService, didReceiveState model: String?, provider: String?, contextTokens: Int?) {
@@ -468,8 +523,11 @@ extension ChatViewModel: ChatServiceDelegate {
         
         let statusText = lines.isEmpty ? "Connected (no additional info)" : lines.joined(separator: "\n")
         
-        // Update the last message if it's a status request placeholder, or add new one
+        // Update the last message ONLY if it's the status request placeholder
+        // This prevents accidentally overwriting real assistant messages
         if let lastIndex = messages.indices.last,
+           messages[lastIndex].role == .assistant,
+           messages[lastIndex].items.count == 1,
            case .text(let text) = messages[lastIndex].items.first,
            text == "Requested status..." {
             messages[lastIndex] = ChatMessage(
@@ -478,6 +536,7 @@ extension ChatViewModel: ChatServiceDelegate {
                 isStreaming: false
             )
         } else {
+            // Always add as new message - never replace existing content
             addSystemMessage(statusText)
         }
     }
