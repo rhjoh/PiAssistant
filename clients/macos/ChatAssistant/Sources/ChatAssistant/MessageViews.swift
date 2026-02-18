@@ -6,6 +6,7 @@ struct MessageView: View {
     let message: ChatMessage
     var showThinking: Bool = true
     var zoomLevel: Double = 1.0
+    var theme: Theme
     
     var body: some View {
         HStack {
@@ -24,8 +25,8 @@ struct MessageView: View {
                 }
                 
                 Text(formattedTime(message.timestamp))
-                    .font(.system(size: 11 * zoomLevel))
-                    .foregroundColor(.gray)
+                    .font(theme.caption(size: 11 * zoomLevel))
+                    .foregroundColor(theme.textSecondary)
                     .padding(.horizontal, 4)
             }
             .frame(maxWidth: min(550 * zoomLevel, 800), alignment: message.role == .user ? .trailing : .leading)
@@ -45,24 +46,24 @@ struct MessageView: View {
             } else if isHeartbeatPrompt(text) {
                 heartbeatIndicator(isPrompt: true)
             } else if let imageSource = extractMarkdownImageSource(from: text) {
-                ImageBubbleView(source: imageSource, isUserMessage: message.role == .user, zoomLevel: zoomLevel)
+                ImageBubbleView(source: imageSource, isUserMessage: message.role == .user, zoomLevel: zoomLevel, theme: theme)
             } else {
                 textBubble(text: text)
             }
 
         case .image(let source):
-            ImageBubbleView(source: source, isUserMessage: message.role == .user, zoomLevel: zoomLevel)
+            ImageBubbleView(source: source, isUserMessage: message.role == .user, zoomLevel: zoomLevel, theme: theme)
             
         case .thinking(let content, let isComplete):
-            ThinkingView(content: content, isComplete: isComplete, zoomLevel: zoomLevel)
+            ThinkingView(content: content, isComplete: isComplete, zoomLevel: zoomLevel, theme: theme)
                 .opacity(showThinking ? 1 : 0)
                 .frame(height: showThinking ? nil : 0)
             
         case .toolCall(let id, let name, let arguments):
-            ToolCallView(id: id, name: name, arguments: arguments, zoomLevel: zoomLevel)
+            ToolCallView(id: id, name: name, arguments: arguments, zoomLevel: zoomLevel, theme: theme)
             
         case .toolResult(let toolCallId, let toolName, let content, let isError):
-            ToolResultView(toolCallId: toolCallId, toolName: toolName, content: content, isError: isError, zoomLevel: zoomLevel)
+            ToolResultView(toolCallId: toolCallId, toolName: toolName, content: content, isError: isError, zoomLevel: zoomLevel, theme: theme)
         }
     }
     
@@ -93,16 +94,16 @@ struct MessageView: View {
     private func heartbeatIndicator(isPrompt: Bool = false) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "heart.fill")
-                .font(.system(size: 10 * zoomLevel))
-                .foregroundColor(.pink)
+                .font(theme.caption(size: 10 * zoomLevel))
+                .foregroundColor(theme.heartbeat)
             Text(isPrompt ? "Heartbeat check" : "Heartbeat")
-                .font(.system(size: 12 * zoomLevel))
-                .foregroundColor(.secondary)
+                .font(theme.caption(size: 12 * zoomLevel))
+                .foregroundColor(theme.textSecondary)
         }
         .padding(.horizontal, 10 * zoomLevel)
         .padding(.vertical, 6 * zoomLevel)
-        .background(Color.pink.opacity(0.1))
-        .cornerRadius(12)
+        .background(theme.heartbeatBackground)
+        .cornerRadius(theme.cornerRadius)
     }
     
     private func textBubble(text: String) -> some View {
@@ -110,11 +111,15 @@ struct MessageView: View {
         let escaped = escapeMarkdownLineStart(normalized)
 
         return renderedMarkdownPreservingNewlines(escaped)
-            .font(.system(size: 14 * zoomLevel))
+            .font(theme.body(size: 14 * zoomLevel))
             .padding(12 * zoomLevel)
-            .background(message.role == .user ? Color.blue : Color.gray.opacity(0.15))
-            .foregroundColor(message.role == .user ? .white : .primary)
-            .cornerRadius(16)
+            .background(message.role == .user ? theme.userBubble : theme.assistantBubble)
+            .foregroundColor(message.role == .user ? .white : theme.textPrimary)
+            .cornerRadius(theme.cornerRadius)
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.cornerRadius)
+                    .stroke(message.role == .user ? theme.userBubbleBorder : theme.assistantBubbleBorder, lineWidth: 1)
+            )
             .textSelection(.enabled)
     }
 
@@ -189,6 +194,7 @@ struct ImageBubbleView: View {
     let source: String
     let isUserMessage: Bool
     var zoomLevel: Double = 1.0
+    var theme: Theme
     @State private var showPreview = false
 
     var body: some View {
@@ -220,13 +226,17 @@ struct ImageBubbleView: View {
             .frame(maxWidth: 420 * zoomLevel, maxHeight: 320 * zoomLevel)
 
             Text("Click to expand")
-                .font(.system(size: 11 * zoomLevel))
-                .foregroundColor(.secondary)
+                .font(theme.caption(size: 11 * zoomLevel))
+                .foregroundColor(theme.textSecondary)
         }
         .padding(8 * zoomLevel)
-        .background(isUserMessage ? Color.blue.opacity(0.15) : Color.gray.opacity(0.15))
-        .cornerRadius(12)
-        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .background(isUserMessage ? theme.userBubble.opacity(0.3) : theme.assistantBubble)
+        .cornerRadius(theme.cornerRadius)
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.cornerRadius)
+                .stroke(theme.border, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: theme.cornerRadius))
         .onTapGesture {
             showPreview = true
         }
@@ -342,50 +352,52 @@ struct ToolCallView: View {
     let name: String
     let arguments: String
     var zoomLevel: Double = 1.0
+    var theme: Theme
     @State private var isExpanded = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8 * zoomLevel) {
             HStack {
                 Image(systemName: iconForTool(name))
-                    .font(.system(size: 16 * zoomLevel))
-                    .foregroundColor(colorForTool(name))
+                    .font(theme.body(size: 16 * zoomLevel))
+                    .foregroundColor(theme.toolCall)
                 VStack(alignment: .leading, spacing: 2 * zoomLevel) {
                     Text("Using tool: \(name)")
-                        .font(.system(size: 14 * zoomLevel, weight: .medium))
+                        .font(theme.body(size: 14 * zoomLevel))
                     if let detail = toolDetailText {
                         Text(detail)
-                            .font(.system(size: 11 * zoomLevel))
-                            .foregroundColor(.secondary)
+                            .font(theme.caption(size: 11 * zoomLevel))
+                            .foregroundColor(theme.textSecondary)
                             .lineLimit(1)
                     }
                 }
                 Spacer()
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11 * zoomLevel))
+                    .foregroundColor(theme.textSecondary)
+                    .font(theme.caption(size: 11 * zoomLevel))
             }
             
             if isExpanded {
                 VStack(alignment: .leading, spacing: 4 * zoomLevel) {
                     Text("Arguments:")
-                        .font(.system(size: 11 * zoomLevel))
-                        .foregroundColor(.secondary)
+                        .font(theme.caption(size: 11 * zoomLevel))
+                        .foregroundColor(theme.textSecondary)
                     Text(formatJSON(arguments))
-                        .font(.system(size: 11 * zoomLevel, design: .monospaced))
+                        .font(theme.code(size: 11 * zoomLevel))
+                        .foregroundColor(theme.codeText)
                         .textSelection(.enabled)
                         .padding(8 * zoomLevel)
-                        .background(Color.black.opacity(0.05))
-                        .cornerRadius(6)
+                        .background(theme.codeBackground)
+                        .cornerRadius(theme.cornerRadius)
                 }
             }
         }
         .padding(12 * zoomLevel)
-        .background(colorForTool(name).opacity(0.08))
-        .cornerRadius(12)
+        .background(theme.toolCallBackground)
+        .cornerRadius(theme.cornerRadius)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(colorForTool(name).opacity(0.3), lineWidth: 1)
+            RoundedRectangle(cornerRadius: theme.cornerRadius)
+                .stroke(theme.toolCallBorder, lineWidth: 1)
         )
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -470,6 +482,7 @@ struct ToolResultView: View {
     let content: String
     let isError: Bool
     var zoomLevel: Double = 1.0
+    var theme: Theme
     @State private var isExpanded = true
     @State private var didCopy = false
     
@@ -478,27 +491,27 @@ struct ToolResultView: View {
             // Header - tap to expand/collapse
             HStack {
                 Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                    .font(.system(size: 16 * zoomLevel))
-                    .foregroundColor(isError ? .red : .green)
+                    .font(theme.body(size: 16 * zoomLevel))
+                    .foregroundColor(isError ? .red : theme.toolResult)
                 Text(isError ? "Tool failed" : "Tool result")
-                    .font(.system(size: 14 * zoomLevel, weight: .medium))
+                    .font(theme.body(size: 14 * zoomLevel))
                 Spacer()
 
                 Button(action: copyToClipboard) {
                     HStack(spacing: 4) {
                         Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 11 * zoomLevel, weight: .semibold))
+                            .font(theme.caption(size: 11 * zoomLevel))
                         Text(didCopy ? "Copied" : "Copy")
-                            .font(.system(size: 11 * zoomLevel, weight: .medium))
+                            .font(theme.caption(size: 11 * zoomLevel))
                     }
                 }
                 .buttonStyle(.borderless)
-                .foregroundColor(didCopy ? .green : .secondary)
+                .foregroundColor(didCopy ? .green : theme.textSecondary)
                 .help("Copy tool output")
 
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11 * zoomLevel))
+                    .foregroundColor(theme.textSecondary)
+                    .font(theme.caption(size: 11 * zoomLevel))
             }
             .contentShape(Rectangle())
             .onTapGesture {
@@ -509,21 +522,22 @@ struct ToolResultView: View {
             
             if isExpanded {
                 Text(content)
-                    .font(.system(size: 13 * zoomLevel, design: .monospaced))
+                    .font(theme.code(size: 13 * zoomLevel))
+                    .foregroundColor(theme.codeText)
                     .lineLimit(20)
                     .padding(10 * zoomLevel)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black.opacity(0.06))
-                    .cornerRadius(8)
+                    .background(theme.codeBackground)
+                    .cornerRadius(theme.cornerRadius)
             }
         }
         .padding(12 * zoomLevel)
-        .background(isError ? Color.red.opacity(0.06) : Color.green.opacity(0.06))
-        .cornerRadius(12)
+        .background(isError ? Color.red.opacity(0.06) : theme.toolResultBackground)
+        .cornerRadius(theme.cornerRadius)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isError ? Color.red.opacity(0.2) : Color.green.opacity(0.2), lineWidth: 1)
+            RoundedRectangle(cornerRadius: theme.cornerRadius)
+                .stroke(isError ? Color.red.opacity(0.2) : theme.toolResultBorder, lineWidth: 1)
         )
     }
 
@@ -568,6 +582,7 @@ struct ThinkingView: View {
     let content: String
     let isComplete: Bool
     var zoomLevel: Double = 1.0
+    var theme: Theme
     @State private var isExpanded = false
     
     var body: some View {
@@ -575,35 +590,35 @@ struct ThinkingView: View {
             HStack(spacing: 8 * zoomLevel) {
                 Image(systemName: "brain")
                     .foregroundColor(.purple)
-                    .font(.system(size: 14 * zoomLevel))
+                    .font(theme.body(size: 14 * zoomLevel))
                 
                 Text(isComplete ? "Thought process" : "Thinking...")
-                    .font(.system(size: 14 * zoomLevel, weight: .medium))
+                    .font(theme.body(size: 14 * zoomLevel))
                     .foregroundColor(.purple)
                 
                 Spacer()
                 
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .foregroundColor(.secondary.opacity(0.7))
-                    .font(.system(size: 12 * zoomLevel))
+                    .foregroundColor(theme.textSecondary)
+                    .font(theme.caption(size: 12 * zoomLevel))
             }
             
             if isExpanded && !content.isEmpty {
                 Text(content)
-                    .font(.system(size: 14 * zoomLevel, design: .monospaced))
+                    .font(theme.code(size: 14 * zoomLevel))
                     .padding(10 * zoomLevel)
                     .textSelection(.enabled)
-                    .background(Color.purple.opacity(0.05))
-                    .cornerRadius(8)
+                    .background(theme.background)
+                    .cornerRadius(theme.cornerRadius)
             }
         }
         .padding(.horizontal, 12 * zoomLevel)
         .padding(.vertical, 10 * zoomLevel)
-        .background(Color.purple.opacity(0.06))
-        .cornerRadius(10)
+        .background(theme.thinkingBlock)
+        .cornerRadius(theme.cornerRadius)
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.purple.opacity(0.25), lineWidth: 1)
+            RoundedRectangle(cornerRadius: theme.cornerRadius)
+                .stroke(theme.thinkingBlockBorder, lineWidth: 1)
         )
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -617,6 +632,7 @@ struct ThinkingView: View {
 struct ConnectionStatusView: View {
     let state: ConnectionState
     var showThinking: Bool = false
+    var theme: Theme
     
     var body: some View {
         HStack(spacing: 4) {
@@ -624,11 +640,11 @@ struct ConnectionStatusView: View {
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
             Text(statusText)
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(theme.caption(size: 11))
+                .foregroundColor(theme.textSecondary)
             if showThinking {
                 Text("• Thinking On")
-                    .font(.caption)
+                    .font(theme.caption(size: 11))
                     .foregroundColor(.purple)
             }
         }
@@ -669,6 +685,7 @@ struct CommandPopup: View {
     let commands: [SlashCommand]
     let selectedIndex: Int
     let zoomLevel: Double
+    let theme: Theme
     let onSelect: (SlashCommand) -> Void
     
     var body: some View {
@@ -677,7 +694,8 @@ struct CommandPopup: View {
                 CommandRow(
                     command: command,
                     isSelected: index == selectedIndex,
-                    zoomLevel: zoomLevel
+                    zoomLevel: zoomLevel,
+                    theme: theme
                 )
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -690,8 +708,8 @@ struct CommandPopup: View {
                 }
             }
         }
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(10 * zoomLevel)
+        .background(theme.headerBackground)
+        .cornerRadius(theme.cornerRadius * zoomLevel)
         .shadow(color: .black.opacity(0.15), radius: 8 * zoomLevel, x: 0, y: -4 * zoomLevel)
         .frame(maxHeight: 280 * zoomLevel)
     }
@@ -701,22 +719,23 @@ struct CommandRow: View {
     let command: SlashCommand
     let isSelected: Bool
     let zoomLevel: Double
+    let theme: Theme
     
     var body: some View {
         HStack(spacing: 12 * zoomLevel) {
             Image(systemName: "command")
-                .font(.system(size: 14 * zoomLevel))
+                .font(theme.body(size: 14 * zoomLevel))
                 .foregroundColor(isSelected ? .white : .blue)
                 .frame(width: 24 * zoomLevel)
             
             VStack(alignment: .leading, spacing: 2 * zoomLevel) {
                 Text(command.usage)
-                    .font(.system(size: 13 * zoomLevel, weight: .semibold))
-                    .foregroundColor(isSelected ? .white : .primary)
+                    .font(theme.body(size: 13 * zoomLevel))
+                    .foregroundColor(isSelected ? .white : theme.textPrimary)
                 
                 Text(command.description)
-                    .font(.system(size: 11 * zoomLevel))
-                    .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
+                    .font(theme.caption(size: 11 * zoomLevel))
+                    .foregroundColor(isSelected ? .white.opacity(0.85) : theme.textSecondary)
                     .lineLimit(1)
             }
             

@@ -526,6 +526,8 @@ struct ChatView: View {
     @State private var isAutoScrollEnabled = true  // Auto-scroll when near bottom
     @State private var hasCompletedInitialScroll = false
     @State private var scrollToBottom: (() -> Void)?
+    
+    private var theme: Theme { settings.currentTheme.theme }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -533,17 +535,18 @@ struct ChatView: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Personal Assistant")
-                        .font(.headline)
+                        .font(theme.body(size: 16))
+                        .foregroundColor(theme.textPrimary)
                     HStack(spacing: 6) {
-                        ConnectionStatusView(state: viewModel.connectionState, showThinking: settings.showThinking)
+                        ConnectionStatusView(state: viewModel.connectionState, showThinking: settings.showThinking, theme: theme)
                         if viewModel.isStreaming {
                             Text("• Generating...")
-                                .font(.caption)
+                                .font(theme.caption(size: 11))
                                 .foregroundColor(.orange)
                         }
                         if viewModel.isThinking {
                             Text("• Thinking...")
-                                .font(.caption)
+                                .font(theme.caption(size: 11))
                                 .foregroundColor(.purple)
                         }
                     }
@@ -558,7 +561,7 @@ struct ChatView: View {
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 11, weight: .semibold))
                             Text("\(viewModel.currentTokenUsage.inputTokens / 1000)k")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(theme.caption(size: 12))
                         }
                         .foregroundColor(.blue)
                     }
@@ -567,7 +570,7 @@ struct ChatView: View {
                             Image(systemName: "arrow.down")
                                 .font(.system(size: 11, weight: .semibold))
                             Text("\(viewModel.currentTokenUsage.outputTokens / 1000)k")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(theme.caption(size: 12))
                         }
                         .foregroundColor(.green)
                     }
@@ -576,7 +579,7 @@ struct ChatView: View {
                             Image(systemName: "book")
                                 .font(.system(size: 11, weight: .semibold))
                             Text("\(viewModel.currentTokenUsage.cacheReadTokens / 1000)k")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(theme.caption(size: 12))
                         }
                         .foregroundColor(.purple)
                     }
@@ -585,12 +588,27 @@ struct ChatView: View {
                             Image(systemName: "clock.arrow.circlepath")
                                 .font(.system(size: 11, weight: .semibold))
                             Text("\(context / 1000)k")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(theme.caption(size: 12))
                         }
                         .foregroundColor(.orange)
                     }
                 }
                 .help("Token usage: ↑ input ↓ output 📖 cache ⏱ context")
+                
+                // Theme toggle button
+                Button(action: { settings.toggleTheme() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: theme.icon)
+                            .foregroundColor(settings.currentTheme == .terminal ? theme.textPrimary : .gray)
+                        if settings.currentTheme == .terminal {
+                            Text("TUI")
+                                .font(theme.caption(size: 11))
+                                .foregroundColor(theme.textPrimary)
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+                .help("Toggle theme (Standard / Terminal)")
                 
                 // Thinking toggle button
                 Button(action: { settings.showThinking.toggle() }) {
@@ -599,7 +617,7 @@ struct ChatView: View {
                             .foregroundColor(settings.showThinking ? .purple : .gray)
                         if settings.showThinking {
                             Text("Thinking On")
-                                .font(.caption)
+                                .font(theme.caption(size: 11))
                                 .foregroundColor(.purple)
                         }
                     }
@@ -614,7 +632,7 @@ struct ChatView: View {
                 .disabled(viewModel.connectionState == .connecting)
             }
             .padding()
-            .background(.ultraThinMaterial)
+            .background(theme.headerBackground)
             
             // Messages List
             ZStack(alignment: .bottomTrailing) {
@@ -639,11 +657,12 @@ struct ChatView: View {
                 ) {
                     LazyVStack(spacing: 16) {
                         ForEach(viewModel.messages) { message in
-                            MessageView(message: message, showThinking: settings.showThinking, zoomLevel: settings.zoomLevel)
+                            MessageView(message: message, showThinking: settings.showThinking, zoomLevel: settings.zoomLevel, theme: theme)
                         }
                     }
                     .padding()
                 }
+                .background(theme.background)
                 .onChange(of: viewModel.messages.count) { _ in
                     // On initial load (first time we get messages), scroll to bottom
                     if !hasCompletedInitialScroll && !viewModel.messages.isEmpty {
@@ -692,6 +711,7 @@ struct ChatView: View {
                         attachments: viewModel.imageAttachments,
                         totalSize: viewModel.totalAttachmentSizeFormatted,
                         zoomLevel: settings.zoomLevel,
+                        theme: theme,
                         onRemove: { id in
                             viewModel.removeImageAttachment(id: id)
                         },
@@ -713,6 +733,7 @@ struct ChatView: View {
                             text: $viewModel.inputText,
                             placeholder: viewModel.imageAttachments.isEmpty ? "Message..." : "Add a message or send images...",
                             zoomLevel: settings.zoomLevel,
+                            theme: theme,
                             onSubmit: {
                                 if !viewModel.isStreaming {
                                     sendMessageFromUI()
@@ -741,6 +762,7 @@ struct ChatView: View {
                             commands: viewModel.filteredCommands,
                             selectedIndex: viewModel.selectedCommandIndex,
                             zoomLevel: settings.zoomLevel,
+                            theme: theme,
                             onSelect: { command in
                                 viewModel.inputText = command.usage
                                 viewModel.showCommandPopup = false
@@ -752,7 +774,13 @@ struct ChatView: View {
                     }
                 }
             }
-            .background(.ultraThinMaterial)
+            .background(theme.inputBackground)
+            .overlay(
+                Rectangle()
+                    .frame(height: 1)
+                    .foregroundColor(theme.border)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            )
             // Drag & Drop support for images
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
@@ -784,6 +812,7 @@ struct ChatView: View {
                 }
             )
         )
+        .preferredColorScheme(settings.currentTheme == .terminal ? .dark : nil)
     }
     
     private var canSend: Bool {
@@ -876,19 +905,25 @@ struct AutoGrowingTextField: View {
     @Binding var text: String
     var placeholder: String
     var zoomLevel: Double = 1.0
+    var theme: Theme
     var onSubmit: () -> Void
 
     var body: some View {
         TextField(placeholder, text: $text, axis: .vertical)
             .textFieldStyle(.plain)
             .lineLimit(1...6)
-            .font(.system(size: 14 * zoomLevel))
+            .font(theme.body(size: 14 * zoomLevel))
+            .foregroundColor(theme.textPrimary)
             .onSubmit {
                 onSubmit()
             }
             .padding(10 * zoomLevel)
-            .background(Color.gray.opacity(0.12))
-            .cornerRadius(12 * zoomLevel)
+            .background(theme.assistantBubble)
+            .cornerRadius(theme.cornerRadius * zoomLevel)
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.cornerRadius * zoomLevel)
+                    .stroke(theme.border, lineWidth: 1)
+            )
     }
 }
 
@@ -897,6 +932,7 @@ struct ImageAttachmentBar: View {
     let attachments: [ImageAttachment]
     let totalSize: String
     let zoomLevel: Double
+    let theme: Theme
     let onRemove: (UUID) -> Void
     let onClear: () -> Void
     
@@ -920,20 +956,24 @@ struct ImageAttachmentBar: View {
             // Footer with size and clear button
             HStack {
                 Text("\(attachments.count) image\(attachments.count == 1 ? "" : "s") • \(totalSize)")
-                    .font(.system(size: 12 * zoomLevel))
-                    .foregroundColor(.secondary)
+                    .font(theme.caption(size: 12 * zoomLevel))
+                    .foregroundColor(theme.textSecondary)
                 
                 Spacer()
                 
                 Button("Clear All", action: onClear)
-                    .font(.system(size: 12 * zoomLevel))
+                    .font(theme.caption(size: 12 * zoomLevel))
                     .buttonStyle(.borderless)
                     .foregroundColor(.red)
             }
         }
         .padding(8 * zoomLevel)
-        .background(Color.gray.opacity(0.08))
-        .cornerRadius(8 * zoomLevel)
+        .background(theme.assistantBubble)
+        .cornerRadius(theme.cornerRadius * zoomLevel)
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.cornerRadius * zoomLevel)
+                .stroke(theme.border, lineWidth: 1)
+        )
     }
 }
 
