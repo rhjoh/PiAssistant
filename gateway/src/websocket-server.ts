@@ -1,12 +1,19 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { createReadStream, existsSync } from "node:fs";
-import { createInterface } from "node:readline";
 import type { BroadcastManager } from "./broadcast.js";
 import type { Client, WSClientMessage, WSServerMessage } from "./types-ws.js";
 import { config } from "./config.js";
 import { ImageStorage } from "./image-storage.js";
 import { PiClientHandler } from "./pi-client-handler.js";
 import type { PiRpcClient } from "./pi-rpc.js";
+import {
+  MessageRouter,
+  PromptHandler,
+  PromptWithImagesHandler,
+  AbortHandler,
+  GetStateHandler,
+  GetHistoryHandler,
+  CommandHandler,
+} from "./handlers/messages.js";
 
 interface WSClient extends Client {
   ws: WebSocket;
@@ -15,10 +22,10 @@ interface WSClient extends Client {
 
 /**
  * WebSocket server for multi-client access to Pi.
- * 
+ *
  * All clients connect here and receive the same broadcasts.
  * Telegram is treated as another client via BroadcastManager.
- * 
+ *
  * Supports two connection types:
  * - Regular clients (macOS app, web): / (root path)
  * - Pi TUI clients: /pi-client (native Pi protocol)
@@ -29,6 +36,7 @@ export class WebSocketGateway {
   private pingInterval: NodeJS.Timeout | null = null;
   private imageStorage: ImageStorage;
   private piClientHandler: PiClientHandler;
+  private messageRouter: MessageRouter;
 
   constructor(
     private broadcastManager: BroadcastManager,
@@ -37,6 +45,16 @@ export class WebSocketGateway {
   ) {
     this.imageStorage = new ImageStorage();
     this.piClientHandler = new PiClientHandler(broadcastManager, pi);
+
+    // Initialize message router with handlers
+    this.messageRouter = new MessageRouter([
+      new PromptHandler(broadcastManager),
+      new PromptWithImagesHandler(broadcastManager, this.imageStorage),
+      new AbortHandler(broadcastManager),
+      new GetStateHandler(broadcastManager),
+      new GetHistoryHandler(this.imageStorage, config.pi.sessionPath),
+      new CommandHandler({ broadcastManager }),
+    ]);
   }
 
   async start(): Promise<void> {
@@ -99,7 +117,7 @@ export class WebSocketGateway {
 
     // Regular client connection
     const clientId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-    
+
     const client: WSClient = {
       id: clientId,
       type: "websocket",
@@ -145,7 +163,7 @@ export class WebSocketGateway {
   private async sendConnectionConfirmation(client: WSClient): Promise<void> {
     try {
       const stateMessage = await this.broadcastManager.getState();
-      
+
       if (stateMessage.type === "state") {
         client.send({
           type: "connection",
@@ -161,7 +179,7 @@ export class WebSocketGateway {
           data: { connected: true },
         });
       }
-    } catch (err) {
+    } catch {
       client.send({
         type: "connection",
         data: { connected: true },
@@ -171,41 +189,13 @@ export class WebSocketGateway {
 
   private async handleMessage(client: WSClient, data: Buffer | ArrayBuffer | Buffer[]): Promise<void> {
     try {
-      const dataStr = Buffer.isBuffer(data) ? data.toString() : Buffer.from(data as ArrayBuffer).toString();
+      const dataStr = Buffer.isBuffer(data)
+        ? data.toString()
+        : Buffer.from(data as ArrayBuffer).toString();
       const message = JSON.parse(dataStr) as WSClientMessage;
       console.log(`[WebSocket] Received ${message.type} from ${client.id}`);
 
-      switch (message.type) {
-        case "prompt":
-          await this.handlePrompt(client, message.message);
-          break;
-
-        case "prompt_with_images":
-          await this.handlePromptWithImages(client, message.message, message.images);
-          break;
-
-        case "abort":
-          this.broadcastManager.abort();
-          break;
-
-        case "get_state":
-          await this.handleGetState(client);
-          break;
-
-        case "get_history":
-          await this.handleGetHistory(client, message.limit ?? 50);
-          break;
-
-        case "command":
-          await this.handleCommand(client, message.command, message.args);
-          break;
-
-        default:
-          client.send({
-            type: "error",
-            data: { message: `Unknown message type: ${(message as {type: string}).type}` },
-          });
-      }
+      await this.messageRouter.route(client, message);
     } catch (err) {
       console.error("[WebSocket] Failed to parse message:", err);
       client.send({
@@ -213,301 +203,6 @@ export class WebSocketGateway {
         data: { message: "Invalid JSON message" },
       });
     }
-  }
-
-  private async handlePrompt(client: WSClient, message: string): Promise<void> {
-    try {
-      const participatingClients = await this.broadcastManager.sendPrompt(message, client.id);
-      
-      // Confirm to sender that prompt was accepted
-      client.send({
-        type: "state",
-        data: { isProcessing: true },
-      });
-
-      console.log(`[WebSocket] Prompt sent, ${participatingClients.size} clients will receive response`);
-    } catch (err) {
-      client.send({
-        type: "error",
-        data: { 
-          message: err instanceof Error ? err.message : "Failed to send prompt" 
-        },
-      });
-    }
-  }
-
-  private async handlePromptWithImages(
-    client: WSClient,
-    message: string,
-    images: { data: string; mimeType: string }[]
-  ): Promise<void> {
-    try {
-      // Validate images
-      if (!images || images.length === 0) {
-        client.send({
-          type: "error",
-          data: { message: "No images provided" },
-        });
-        return;
-      }
-
-      console.log(`[WebSocket] Received prompt_with_images with ${images.length} image(s):`);
-      images.forEach((img, i) => {
-        const decodedSize = (img.data.length * 3) / 4;
-        console.log(`  Image ${i + 1}: ${img.mimeType}, ${decodedSize} bytes`);
-      });
-
-      // Check image sizes (5MB limit per image)
-      const maxSize = 5 * 1024 * 1024; // 5MB in bytes
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i];
-        // Base64 is ~4/3 the size of binary, so check decoded size
-        const decodedSize = (img.data.length * 3) / 4;
-        if (decodedSize > maxSize) {
-          client.send({
-            type: "error",
-            data: { message: `Image ${i + 1} exceeds 5MB limit` },
-          });
-          return;
-        }
-      }
-
-      // Save images to disk and get file paths
-      const imageRefs: { path: string; mimeType: string; data: string }[] = [];
-      for (const img of images) {
-        const stored = await this.imageStorage.saveImage(img.data, img.mimeType);
-        imageRefs.push({
-          path: stored.path,
-          mimeType: stored.mimeType,
-          data: img.data, // Keep base64 for sending to Pi
-        });
-      }
-
-      const participatingClients = await this.broadcastManager.sendPromptWithImages(
-        message,
-        imageRefs, // Now includes path + base64
-        client.id
-      );
-      
-      // Confirm to sender that prompt was accepted
-      client.send({
-        type: "state",
-        data: { isProcessing: true },
-      });
-
-      console.log(`[WebSocket] Prompt with ${images.length} image(s) sent, ${participatingClients.size} clients will receive response`);
-    } catch (err) {
-      client.send({
-        type: "error",
-        data: { 
-          message: err instanceof Error ? err.message : "Failed to send prompt with images" 
-        },
-      });
-    }
-  }
-
-  private async handleGetState(client: WSClient): Promise<void> {
-    try {
-      const state = await this.broadcastManager.getState();
-      client.send(state);
-    } catch (err) {
-      client.send({
-        type: "error",
-        data: { message: "Failed to get state" },
-      });
-    }
-  }
-
-  private async handleCommand(
-    client: WSClient, 
-    command: string, 
-    args?: string[]
-  ): Promise<void> {
-    console.log(`[WebSocket] Command received: ${command} ${args?.join(" ") || ""}`);
-    
-    try {
-      let responseText: string;
-      
-      switch (command) {
-        case "model":
-          responseText = await this.broadcastManager.handleModelCommand(args?.[0] || "");
-          break;
-
-        case "session":
-          responseText = await this.broadcastManager.handleSessionCommand();
-          break;
-
-        case "new":
-          responseText = await this.broadcastManager.handleNewCommand();
-          break;
-
-        case "takeover":
-          responseText = await this.broadcastManager.handleTakeoverCommand();
-          break;
-
-        case "status": {
-          const state = await this.broadcastManager.getState();
-          if (state.type === "state") {
-            const s = state.data;
-            responseText = [
-              "Gateway status:",
-              `Model: ${s.provider && s.model ? `${s.provider}/${s.model}` : "(unknown)"}`,
-              `Processing: ${s.isProcessing ? "yes" : "no"}`,
-              `Context tokens: ${s.contextTokens ?? "(n/a)"}`,
-            ].join("\n");
-          } else {
-            responseText = "Gateway status unavailable";
-          }
-          break;
-        }
-
-        default:
-          responseText = `Unknown command: ${command}`;
-      }
-      
-      // Send response as text delta followed by done
-      client.send({
-        type: "text_delta",
-        data: { content: responseText },
-      });
-      
-      client.send({
-        type: "done",
-        data: { finalText: responseText },
-      });
-      
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[WebSocket] Command failed: ${command}`, err);
-      
-      client.send({
-        type: "error",
-        data: { message: `Command failed: ${errorMsg}` },
-      });
-    }
-  }
-
-  private async handleGetHistory(client: WSClient, limit: number): Promise<void> {
-    try {
-      const messages = await this.readSessionHistory(limit);
-      client.send({
-        type: "history",
-        data: { messages },
-      });
-    } catch (err) {
-      console.error("[WebSocket] Failed to read history:", err);
-      client.send({
-        type: "history",
-        data: { messages: [] },
-      });
-    }
-  }
-
-  private async readSessionHistory(limit: number): Promise<unknown[]> {
-    const sessionPath = config.pi.sessionPath;
-    const messages: unknown[] = [];
-
-    // If session file doesn't exist yet, return empty history (Pi hasn't created it)
-    if (!existsSync(sessionPath)) {
-      return messages;
-    }
-
-    try {
-      const fileStream = createReadStream(sessionPath);
-      const rl = createInterface({
-        input: fileStream,
-        crlfDelay: Infinity,
-      });
-
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type !== "message") continue;
-
-          const role = entry.message?.role;
-
-          // Keep regular chat history, but sanitize images in content to use file paths
-          if (role === "user" || role === "assistant") {
-            const sanitizedContent = await this.imageStorage.sanitizeForHistory(
-              entry.message.content
-            );
-            messages.push({
-              id: entry.id,
-              role,
-              content: sanitizedContent,
-              timestamp: entry.timestamp,
-            });
-            continue;
-          }
-
-          // For tool results, include all content but sanitize any images
-          if (role === "toolResult") {
-            const sanitizedContent = await this.imageStorage.sanitizeForHistory(
-              entry.message.content
-            );
-            messages.push({
-              id: entry.id,
-              role,
-              content: sanitizedContent,
-              timestamp: entry.timestamp,
-              toolCallId: entry.message.toolCallId,
-              toolName: entry.message.toolName,
-              isError: entry.message.isError,
-            });
-          }
-        } catch {
-          // Skip invalid lines
-        }
-      }
-
-      // Return last N messages
-      return messages.slice(-limit);
-    } catch (err) {
-      console.error("[WebSocket] Error reading session file:", err);
-      return [];
-    }
-  }
-
-  private sanitizeToolResultImageContent(message: { content?: unknown; details?: unknown }): unknown[] {
-    const content = message.content;
-    if (!Array.isArray(content)) return [];
-
-    const details = (message.details && typeof message.details === "object") ? message.details as Record<string, unknown> : undefined;
-    const detailsPath = typeof details?.path === "string"
-      ? details.path
-      : (typeof details?.savedPath === "string" ? details.savedPath : undefined);
-
-    const imageItems: unknown[] = [];
-
-    for (const part of content) {
-      if (!part || typeof part !== "object") continue;
-      const p = part as Record<string, unknown>;
-      if (p.type !== "image") continue;
-
-      // Prefer file path/url in history payloads (small).
-      if (typeof p.path === "string") {
-        imageItems.push({ type: "image", path: p.path });
-        continue;
-      }
-      if (typeof p.url === "string") {
-        imageItems.push({ type: "image", url: p.url });
-        continue;
-      }
-      if (detailsPath) {
-        imageItems.push({ type: "image", path: detailsPath });
-        continue;
-      }
-
-      // Fallback to inline data only if reasonably small.
-      const data = typeof p.data === "string" ? p.data : undefined;
-      const mimeType = typeof p.mimeType === "string" ? p.mimeType : "image/png";
-      if (data && data.length <= 120_000) {
-        imageItems.push({ type: "image", data, mimeType });
-      }
-    }
-
-    return imageItems;
   }
 
   private heartbeat(): void {
