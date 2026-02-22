@@ -22,7 +22,10 @@ export type WSServerMessage =
   | { type: "text_delta"; data: { content: string } }
   | { type: "thinking_delta"; data: { content: string } }
   | { type: "thinking_done"; data: { content: string } }
-  | { type: "tool_start"; data: { toolCallId: string; toolName: string; args?: unknown; label: string } }
+  | {
+      type: "tool_start";
+      data: { toolCallId: string; toolName: string; args?: unknown; label: string };
+    }
   | { type: "tool_output"; data: { toolCallId: string; output: string; truncated?: boolean } }
   | { type: "tool_end"; data: { toolCallId: string; toolName: string } }
   | { type: "image"; data: { source: string; alt?: string } }
@@ -55,6 +58,53 @@ export interface TokenUsage {
   total: number;
   cost?: number;
 }
+
+/**
+ * Dedicated /pi-client native stream contract.
+ * This is intentionally separate from generic WSServerMessage events.
+ */
+export type PiClientNativeEvent =
+  | { type: "turn_start"; turnId: string; seq: number }
+  | { type: "text_delta"; turnId: string; seq: number; text: string }
+  | { type: "text_done"; turnId: string; seq: number; text: string }
+  | { type: "thinking"; turnId: string; seq: number; text: string }
+  | { type: "thinking_done"; turnId: string; seq: number }
+  | {
+      type: "tool_execution_start";
+      turnId: string;
+      seq: number;
+      toolCallId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_execution_update";
+      turnId: string;
+      seq: number;
+      toolCallId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+      partialResult: unknown;
+    }
+  | {
+      type: "tool_execution_end";
+      turnId: string;
+      seq: number;
+      toolCallId: string;
+      toolName: string;
+      result: unknown;
+      isError?: boolean;
+      args?: Record<string, unknown>;
+    }
+  | { type: "image"; turnId: string; seq: number; data: string; mimeType: string }
+  | { type: "done"; turnId: string; seq: number }
+  | {
+      type: "turn_end";
+      turnId: string;
+      seq: number;
+      stopReason: "stop" | "toolUse" | "error" | "aborted";
+    }
+  | { type: "error"; turnId: string; seq: number; message: string };
 
 /**
  * Client interface for broadcasting - abstracts Telegram and WebSocket clients

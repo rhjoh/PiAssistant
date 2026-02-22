@@ -18,6 +18,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private readline: Interface | null = null;
   private currentText = "";
   private requestId = 0;
+  private parseErrorCount = 0;
 
   constructor(
     private sessionPath: string,
@@ -294,8 +295,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private handleLine(line: string): void {
     if (!line.trim()) return;
 
+    // Limit logspam for parse errors
+    if (!this.parseErrorCount) this.parseErrorCount = 0;
+    if (this.parseErrorCount > 10) return;
+
     try {
       const data = JSON.parse(line) as PiEvent | PiResponse;
+      this.parseErrorCount = 0; // Reset on success
 
       if (data.type === "response") {
         this.emit("response", data as PiResponse);
@@ -308,7 +314,12 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
         }
       }
     } catch (err) {
-      console.error("[Pi RPC] Failed to parse:", line);
+      this.parseErrorCount++;
+      if (this.parseErrorCount <= 3) {
+        console.error("[Pi RPC] Failed to parse:", line.slice(0, 200));
+      } else if (this.parseErrorCount === 4) {
+        console.error("[Pi RPC] Suppressing further parse errors...");
+      }
     }
   }
 

@@ -1,4 +1,7 @@
 import { config, validateConfig } from "./config.js"; // dotenv loaded here
+import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 
 import { handleStatus, handleModel, handleSession, handleNew, handleTakeover } from "./commands.js";
 import { PiRpcClient } from "./pi-rpc.js";
@@ -10,29 +13,47 @@ import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
 import { MemoryWatcher } from "./memory-watcher.js";
 
-// Add timestamps to all console output
-function setupTimestampedLogging(): void {
-  const timestamp = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-  
-  const originalLog = console.log.bind(console);
-  const originalError = console.error.bind(console);
-  const originalWarn = console.warn.bind(console);
-  
-  console.log = (...args) => originalLog(`[${timestamp()}]`, ...args);
-  console.error = (...args) => originalError(`[${timestamp()}]`, ...args);
-  console.warn = (...args) => originalWarn(`[${timestamp()}]`, ...args);
-}
+// Simple timestamp prefix for logs
+const ts = () => new Date().toISOString().slice(11, 23);
+
+// Prefix all console output with timestamp for consistent gateway logs
+const installTimestampedConsole = (): void => {
+  const patch = (method: "log" | "info" | "warn" | "error") => {
+    const original = console[method].bind(console);
+    console[method] = (...args: unknown[]) => {
+      if (args.length === 0) return original(`[${ts()}]`);
+      const [first, ...rest] = args;
+      if (typeof first === "string" && first.startsWith("[")) {
+        original(`[${ts()}] ${first}`, ...rest);
+      } else {
+        original(`[${ts()}]`, first, ...rest);
+      }
+    };
+  };
+
+  patch("log");
+  patch("info");
+  patch("warn");
+  patch("error");
+};
 
 async function main(): Promise<void> {
-  setupTimestampedLogging();
-  
+  installTimestampedConsole();
+
   // Validate environment
   validateConfig();
 
-  console.log("[Gateway] Starting Personal OS Gateway...");
-  console.log(`[Gateway] Pi session: ${config.pi.sessionPath}`);
-  console.log(`[Gateway] Thinking level: ${config.pi.thinkingLevel}`);
-  console.log(`[Gateway] Architecture: Gateway owns Pi RPC (multi-client mode)`);
+  console.log(`[${ts()}] [Gateway] Starting Personal OS Gateway...`);
+  console.log(`[${ts()}] [Gateway] Pi session: ${config.pi.sessionPath}`);
+  console.log(`[${ts()}] [Gateway] Thinking level: ${config.pi.thinkingLevel}`);
+  console.log(`[${ts()}] [Gateway] Architecture: Gateway owns Pi RPC (multi-client mode)`);
+
+  // Ensure session directory exists
+  const sessionDir = dirname(config.pi.sessionPath);
+  if (!existsSync(sessionDir)) {
+    await mkdir(sessionDir, { recursive: true });
+    console.log(`[${ts()}] [Gateway] Created session directory: ${sessionDir}`);
+  }
 
   // Initialize Pi RPC client (will run continuously)
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);
@@ -57,27 +78,27 @@ async function main(): Promise<void> {
   const telegramClient = new TelegramClient(telegram);
   broadcastManager.registerClient(telegramClient);
   
-  // Initialize WebSocket server for macOS and other clients
-  const wsGateway = new WebSocketGateway(broadcastManager, 3456);
+  // Initialize WebSocket server for macOS, Pi TUI, and other clients
+  const wsGateway = new WebSocketGateway(broadcastManager, pi, 3456);
 
   // Wire up Pi events for logging
   pi.on("event", (event) => {
     if (event.type === "tool_execution_start") {
-      console.log(`[Pi] Tool: ${event.toolName}`);
+      console.log(`[${ts()}] [Pi] Tool: ${event.toolName}`);
     }
   });
 
   pi.on("toolResult", (toolName, _result) => {
-    console.log(`[Pi] Tool completed: ${toolName}`);
+    console.log(`[${ts()}] [Pi] Tool completed: ${toolName}`);
   });
 
   pi.on("exit", (code) => {
-    console.log(`[Pi] Process exited with code ${code}`);
+    console.log(`[${ts()}] [Pi] Process exited with code ${code}`);
     // Auto-restart Pi if it crashes
-    console.log("[Gateway] Restarting Pi RPC in 2 seconds...");
+    console.log(`[${ts()}] [Gateway] Restarting Pi RPC in 2 seconds...`);
     setTimeout(() => {
       pi.start().catch((err) => {
-        console.error("[Gateway] Failed to restart Pi RPC:", err);
+        console.error(`[${ts()}] [Gateway] Failed to restart Pi RPC:`, err);
       });
     }, 2000);
   });
@@ -90,9 +111,9 @@ async function main(): Promise<void> {
   sessionManager.setupEventHandlers();
 
   // Start Pi RPC (Gateway owns the session now)
-  console.log("[Gateway] Starting Pi RPC...");
+  console.log(`[${ts()}] [Gateway] Starting Pi RPC...`);
   await pi.start(config.pi.thinkingLevel);
-  console.log("[Gateway] Pi RPC ready");
+  console.log(`[${ts()}] [Gateway] Pi RPC ready`);
   
   // Set thinking level via RPC if specified
   if (config.pi.thinkingLevel && config.pi.thinkingLevel !== "off") {
@@ -104,16 +125,16 @@ async function main(): Promise<void> {
   }
 
   // Start WebSocket server
-  console.log("[Gateway] Starting WebSocket server...");
+  console.log(`[${ts()}] [Gateway] Starting WebSocket server...`);
   await wsGateway.start();
 
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
-    console.log(`[Telegram] Incoming message: ${text.slice(0, 100)}`);
-    
+    console.log(`[${ts()}] [Telegram] Incoming message: ${text.slice(0, 100)}`);
+
     // Set context so TelegramClient knows where to send responses
     telegramClient.setContext(ctx);
-    
+
     // Send prompt via BroadcastManager (will broadcast to all clients)
     await broadcastManager.sendPrompt(text, "telegram");
   });
@@ -161,21 +182,21 @@ async function main(): Promise<void> {
 
   if (config.memory.enabled) {
     await memoryWatcher.start();
-    console.log(`[Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, ${config.memory.provider}/${config.memory.model})`);
+    console.log(`[${ts()}] [Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, ${config.memory.provider}/${config.memory.model})`);
   } else {
-    console.log("[Gateway] Memory watcher disabled");
+    console.log(`[${ts()}] [Gateway] Memory watcher disabled`);
   }
 
   // Start Telegram bot
-  console.log("[Gateway] Starting Telegram bot...");
+  console.log(`[${ts()}] [Gateway] Starting Telegram bot...`);
   await telegram.start();
   
-  console.log("[Gateway] All systems operational");
-  console.log(`[Gateway] Connected clients: ${broadcastManager.getClientCount()}`);
+  console.log(`[${ts()}] [Gateway] All systems operational`);
+  console.log(`[${ts()}] [Gateway] Connected clients: ${broadcastManager.getClientCount()}`);
 
   // Graceful shutdown
   const shutdown = () => {
-    console.log("\n[Gateway] Shutting down...");
+    console.log(`\n[${ts()}] [Gateway] Shutting down...`);
     heartbeat.stop();
     memoryWatcher.stop();
     wsGateway.stop();
@@ -189,6 +210,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[Gateway] Fatal error:", err);
+  console.error(`[${ts()}] [Gateway] Fatal error:`, err);
   process.exit(1);
 });
