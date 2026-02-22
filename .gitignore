@@ -5,7 +5,7 @@
 node_modules/
 dist/
 
-docs/feature_roadmap.md
+docs/
 sessions/
 working_dir/
 tmp/
