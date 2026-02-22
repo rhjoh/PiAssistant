@@ -275,20 +275,28 @@ extension ChatViewModel: ChatServiceDelegate {
     }
     
     func chatService(_ service: ChatService, didReceiveError error: String) {
-        // Add error as system message
-        let errorMessage = ChatMessage(
-            role: .assistant,
-            items: [.text("⚠️ \(error)")],
-            isStreaming: false
-        )
-        messages.append(errorMessage)
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Add error as system message
+            let errorMessage = ChatMessage(
+                role: .assistant,
+                items: [.text("⚠️ \(error)")],
+                isStreaming: false
+            )
+            self.messages.append(errorMessage)
+        }
     }
     
     func chatService(_ service: ChatService, didReceiveTextDelta delta: String) {
-        guard let messageIndex = streamingMessageIndex() else { return }
-        
-        // Append text content to the message, preserving all existing items
-        appendTextContent(delta, in: messageIndex)
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
+            
+            // Append text content to the message, preserving all existing items
+            self.appendTextContent(delta, in: messageIndex)
+        }
     }
     
     /// Appends text content to the message, merging with existing content.
@@ -305,182 +313,212 @@ extension ChatViewModel: ChatServiceDelegate {
     }
     
     func chatService(_ service: ChatService, didReceiveThinkingDelta delta: String) {
-        guard let messageIndex = streamingMessageIndex() else { return }
-        
-        isThinking = true
-        
-        // If the last item is an incomplete thinking block, append to it
-        if let lastItemIndex = messages[messageIndex].items.indices.last,
-           case .thinking(let existingText, let isComplete) = messages[messageIndex].items[lastItemIndex],
-           !isComplete {
-            messages[messageIndex].items[lastItemIndex] = .thinking(existingText + delta, isComplete: false)
-        } else {
-            // Otherwise add new thinking block
-            messages[messageIndex].items.append(.thinking(delta, isComplete: false))
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
+            
+            self.isThinking = true
+            
+            // If the last item is an incomplete thinking block, append to it
+            if let lastItemIndex = self.messages[messageIndex].items.indices.last,
+               case .thinking(let existingText, let isComplete) = self.messages[messageIndex].items[lastItemIndex],
+               !isComplete {
+                self.messages[messageIndex].items[lastItemIndex] = .thinking(existingText + delta, isComplete: false)
+            } else {
+                // Otherwise add new thinking block
+                self.messages[messageIndex].items.append(.thinking(delta, isComplete: false))
+            }
         }
     }
     
     func chatService(_ service: ChatService, didCompleteThinking content: String) {
-        guard let messageIndex = streamingMessageIndex() else { return }
-        
-        isThinking = false
-        
-        // Find and mark the incomplete thinking block as complete
-        if let thinkingIndex = messages[messageIndex].items.indices.last(where: { index in
-            if case .thinking(_, let isComplete) = messages[messageIndex].items[index] {
-                return !isComplete
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
+            
+            self.isThinking = false
+            
+            // Find and mark the incomplete thinking block as complete
+            if let thinkingIndex = self.messages[messageIndex].items.indices.last(where: { index in
+                if case .thinking(_, let isComplete) = self.messages[messageIndex].items[index] {
+                    return !isComplete
+                }
+                return false
+            }) {
+                self.messages[messageIndex].items[thinkingIndex] = .thinking(content, isComplete: true)
             }
-            return false
-        }) {
-            messages[messageIndex].items[thinkingIndex] = .thinking(content, isComplete: true)
         }
     }
     
     func chatService(_ service: ChatService, didStartToolCall id: String, name: String, args: Any?, label: String) {
-        guard let messageIndex = streamingMessageIndex() else { return }
-        
-        // Serialize args to proper JSON string
-        let argsString: String
-        if let args = args {
-            do {
-                let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
-                argsString = String(data: data, encoding: .utf8) ?? "{}"
-            } catch {
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
+            
+            // Serialize args to proper JSON string
+            let argsString: String
+            if let args = args {
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
+                    argsString = String(data: data, encoding: .utf8) ?? "{}"
+                } catch {
+                    argsString = "{}"
+                }
+            } else {
                 argsString = "{}"
             }
-        } else {
-            argsString = "{}"
+            self.messages[messageIndex].items.append(.toolCall(id: id, name: name, arguments: argsString))
         }
-        messages[messageIndex].items.append(.toolCall(id: id, name: name, arguments: argsString))
     }
     
     func chatService(_ service: ChatService, didReceiveToolOutput id: String, output: String, truncated: Bool) {
-        guard let messageIndex = streamingMessageIndex() else { return }
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
 
-        let finalOutput = truncated ? output + "\n… (truncated)" : output
+            let finalOutput = truncated ? output + "\n… (truncated)" : output
 
-        // Update existing tool result if present (streaming), otherwise insert after the tool call.
-        if let existingResultIndex = messages[messageIndex].items.firstIndex(where: { item in
-            if case .toolResult(let toolCallId, _, _, _) = item {
-                return toolCallId == id
+            // Update existing tool result if present (streaming), otherwise insert after the tool call.
+            if let existingResultIndex = self.messages[messageIndex].items.firstIndex(where: { item in
+                if case .toolResult(let toolCallId, _, _, _) = item {
+                    return toolCallId == id
+                }
+                return false
+            }) {
+                let toolName = self.getToolNameForResult(toolCallId: id, in: self.messages[messageIndex].items) ?? "tool"
+
+                let existingContent: String
+                if case .toolResult(_, _, let content, _) = self.messages[messageIndex].items[existingResultIndex] {
+                    existingContent = content
+                } else {
+                    existingContent = ""
+                }
+
+                let mergedOutput = self.mergeToolOutput(existing: existingContent, incoming: finalOutput)
+
+                self.messages[messageIndex].items[existingResultIndex] = .toolResult(
+                    toolCallId: id,
+                    toolName: toolName,
+                    content: mergedOutput,
+                    isError: false
+                )
+                return
             }
-            return false
-        }) {
-            let toolName = getToolNameForResult(toolCallId: id, in: messages[messageIndex].items) ?? "tool"
 
-            let existingContent: String
-            if case .toolResult(_, _, let content, _) = messages[messageIndex].items[existingResultIndex] {
-                existingContent = content
-            } else {
-                existingContent = ""
+            if let toolCallIndex = self.messages[messageIndex].items.firstIndex(where: { item in
+                if case .toolCall(let toolId, _, _) = item {
+                    return toolId == id
+                }
+                return false
+            }) {
+                let toolName = self.getToolName(from: self.messages[messageIndex].items[toolCallIndex])
+                self.messages[messageIndex].items.insert(
+                    .toolResult(toolCallId: id, toolName: toolName, content: finalOutput, isError: false),
+                    at: toolCallIndex + 1
+                )
             }
-
-            let mergedOutput = mergeToolOutput(existing: existingContent, incoming: finalOutput)
-
-            messages[messageIndex].items[existingResultIndex] = .toolResult(
-                toolCallId: id,
-                toolName: toolName,
-                content: mergedOutput,
-                isError: false
-            )
-            return
-        }
-
-        if let toolCallIndex = messages[messageIndex].items.firstIndex(where: { item in
-            if case .toolCall(let toolId, _, _) = item {
-                return toolId == id
-            }
-            return false
-        }) {
-            let toolName = getToolName(from: messages[messageIndex].items[toolCallIndex])
-            messages[messageIndex].items.insert(
-                .toolResult(toolCallId: id, toolName: toolName, content: finalOutput, isError: false),
-                at: toolCallIndex + 1
-            )
         }
     }
     
     func chatService(_ service: ChatService, didEndToolCall id: String, name: String) {
-        // Tool call complete - could update UI if needed
+        // Tool call complete - no state changes needed
     }
 
     func chatService(_ service: ChatService, didReceiveImage source: String, alt: String?) {
-        guard let messageIndex = streamingMessageIndex() else { return }
-        messages[messageIndex].items.append(.image(source: source))
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let messageIndex = self.streamingMessageIndex() else { return }
+            self.messages[messageIndex].items.append(.image(source: source))
+        }
     }
     
     func chatService(_ service: ChatService, didCompleteWithFinalText text: String, usage: TokenUsageData?) {
-        isStreaming = false
-        isThinking = false
-        
-        // Accumulate token usage
-        if let usage = usage {
-            currentTokenUsage.inputTokens += usage.input ?? 0
-            currentTokenUsage.outputTokens += usage.output ?? 0
-            currentTokenUsage.cacheReadTokens += usage.cacheRead ?? 0
-            currentTokenUsage.cacheWriteTokens += usage.cacheWrite ?? 0
-        }
-        
-        // Use streamingMessageIndex to find the correct message, even if history was loaded
-        guard let messageIndex = streamingMessageIndex(),
-              messages[messageIndex].isStreaming else {
-            // Clear the streaming ID even if we couldn't find the message
-            streamingMessageId = nil
-            return
-        }
-        
-        messages[messageIndex].isStreaming = false
-        streamingMessageId = nil  // Clear the tracking ID
-        
-        // Replace accumulated text deltas with the properly formatted final text
-        // This fixes spacing issues that can occur with streaming deltas
-        var updatedItems: [ContentItem] = []
-        var foundText = false
-        
-        for item in messages[messageIndex].items {
-            switch item {
-            case .text:
-                // Replace the first text item with the final text
-                if !foundText {
-                    updatedItems.append(.text(text))
-                    foundText = true
-                }
-                // Skip any additional text items (they're duplicates from streaming)
-            case .thinking(let content, let isComplete):
-                // Keep thinking blocks, mark incomplete as complete
-                if !isComplete && !content.isEmpty {
-                    updatedItems.append(.thinking(content, isComplete: true))
-                } else if !content.isEmpty {
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.isStreaming = false
+            self.isThinking = false
+            
+            // Accumulate token usage
+            if let usage = usage {
+                self.currentTokenUsage.inputTokens += usage.input ?? 0
+                self.currentTokenUsage.outputTokens += usage.output ?? 0
+                self.currentTokenUsage.cacheReadTokens += usage.cacheRead ?? 0
+                self.currentTokenUsage.cacheWriteTokens += usage.cacheWrite ?? 0
+            }
+            
+            // Use streamingMessageIndex to find the correct message, even if history was loaded
+            guard let messageIndex = self.streamingMessageIndex(),
+                  self.messages[messageIndex].isStreaming else {
+                // Clear the streaming ID even if we couldn't find the message
+                self.streamingMessageId = nil
+                return
+            }
+            
+            self.messages[messageIndex].isStreaming = false
+            self.streamingMessageId = nil  // Clear the tracking ID
+            
+            // Replace accumulated text deltas with the properly formatted final text
+            // This fixes spacing issues that can occur with streaming deltas
+            var updatedItems: [ContentItem] = []
+            var foundText = false
+            
+            for item in self.messages[messageIndex].items {
+                switch item {
+                case .text:
+                    // Replace the first text item with the final text
+                    if !foundText {
+                        updatedItems.append(.text(text))
+                        foundText = true
+                    }
+                    // Skip any additional text items (they're duplicates from streaming)
+                case .thinking(let content, let isComplete):
+                    // Keep thinking blocks, mark incomplete as complete
+                    if !isComplete && !content.isEmpty {
+                        updatedItems.append(.thinking(content, isComplete: true))
+                    } else if !content.isEmpty {
+                        updatedItems.append(item)
+                    }
+                default:
+                    // Keep all other items (tool calls, results, images)
                     updatedItems.append(item)
                 }
-            default:
-                // Keep all other items (tool calls, results, images)
-                updatedItems.append(item)
             }
+            
+            // If no text item was found, append the final text
+            if !foundText {
+                updatedItems.append(.text(text))
+            }
+            
+            self.messages[messageIndex].items = updatedItems
         }
-        
-        // If no text item was found, append the final text
-        if !foundText {
-            updatedItems.append(.text(text))
-        }
-        
-        messages[messageIndex].items = updatedItems
     }
 
     
     func chatService(_ service: ChatService, didReceiveHistory historyMessages: [ChatMessage]) {
-        // Only add history messages that aren't already present
-        // Compare by role and first item content to detect duplicates
-        let newMessages = historyMessages.filter { historyMsg in
-            !messages.contains { existingMsg in
-                existingMsg.role == historyMsg.role && 
-                existingMsg.items.count == historyMsg.items.count &&
-                itemsEqual(existingMsg.items, historyMsg.items)
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Only add history messages that aren't already present
+            // Compare by role and first item content to detect duplicates
+            let newMessages = historyMessages.filter { historyMsg in
+                !self.messages.contains { existingMsg in
+                    existingMsg.role == historyMsg.role && 
+                    existingMsg.items.count == historyMsg.items.count &&
+                    self.itemsEqual(existingMsg.items, historyMsg.items)
+                }
             }
-        }
-        
-        if !newMessages.isEmpty {
-            messages = newMessages + messages
+            
+            if !newMessages.isEmpty {
+                self.messages = newMessages + self.messages
+            }
         }
     }
     
@@ -506,38 +544,43 @@ extension ChatViewModel: ChatServiceDelegate {
     }
     
     func chatService(_ service: ChatService, didReceiveState model: String?, provider: String?, contextTokens: Int?) {
-        // Store context tokens for display in header
-        self.contextTokens = contextTokens
-        
-        var lines = [String]()
-        
-        if let model = model, let provider = provider {
-            lines.append("**Model:** \(provider)/\(model)")
-        } else if let model = model {
-            lines.append("**Model:** \(model)")
-        }
-        
-        if let tokens = contextTokens {
-            lines.append("**Context Tokens:** ~\(tokens)")
-        }
-        
-        let statusText = lines.isEmpty ? "Connected (no additional info)" : lines.joined(separator: "\n")
-        
-        // Update the last message ONLY if it's the status request placeholder
-        // This prevents accidentally overwriting real assistant messages
-        if let lastIndex = messages.indices.last,
-           messages[lastIndex].role == .assistant,
-           messages[lastIndex].items.count == 1,
-           case .text(let text) = messages[lastIndex].items.first,
-           text == "Requested status..." {
-            messages[lastIndex] = ChatMessage(
-                role: .assistant,
-                items: [.text(statusText)],
-                isStreaming: false
-            )
-        } else {
-            // Always add as new message - never replace existing content
-            addSystemMessage(statusText)
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Store context tokens for display in header
+            self.contextTokens = contextTokens
+            
+            var lines = [String]()
+            
+            if let model = model, let provider = provider {
+                lines.append("**Model:** \(provider)/\(model)")
+            } else if let model = model {
+                lines.append("**Model:** \(model)")
+            }
+            
+            if let tokens = contextTokens {
+                lines.append("**Context Tokens:** ~\(tokens)")
+            }
+            
+            let statusText = lines.isEmpty ? "Connected (no additional info)" : lines.joined(separator: "\n")
+            
+            // Update the last message ONLY if it's the status request placeholder
+            // This prevents accidentally overwriting real assistant messages
+            if let lastIndex = self.messages.indices.last,
+               self.messages[lastIndex].role == .assistant,
+               self.messages[lastIndex].items.count == 1,
+               case .text(let text) = self.messages[lastIndex].items.first,
+               text == "Requested status..." {
+                self.messages[lastIndex] = ChatMessage(
+                    role: .assistant,
+                    items: [.text(statusText)],
+                    isStreaming: false
+                )
+            } else {
+                // Always add as new message - never replace existing content
+                self.addSystemMessage(statusText)
+            }
         }
     }
     
@@ -573,6 +616,20 @@ extension ChatViewModel: ChatServiceDelegate {
             }
         }
         return nil
+    }
+    
+    func chatService(_ service: ChatService, didReceiveProactive message: String) {
+        // Defer to next run loop to avoid state modification during layout
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Add proactive message as a system/assistant message
+            let proactiveMessage = ChatMessage(
+                role: .assistant,
+                items: [.text(message)],
+                isStreaming: false
+            )
+            self.messages.append(proactiveMessage)
+        }
     }
 }
 

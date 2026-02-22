@@ -15,6 +15,7 @@ protocol ChatServiceDelegate: AnyObject {
     func chatService(_ service: ChatService, didCompleteWithFinalText text: String, usage: TokenUsageData?)
     func chatService(_ service: ChatService, didReceiveHistory messages: [ChatMessage])
     func chatService(_ service: ChatService, didReceiveState model: String?, provider: String?, contextTokens: Int?)
+    func chatService(_ service: ChatService, didReceiveProactive message: String)
 }
 
 @MainActor
@@ -206,6 +207,9 @@ class ChatService: NSObject, ObservableObject {
             case .history(let messagesData):
                 let historyMessages = parseHistoryMessages(messagesData)
                 delegate?.chatService(self, didReceiveHistory: historyMessages)
+                
+            case .proactive(let message):
+                delegate?.chatService(self, didReceiveProactive: message)
             }
         } catch {
             print("Failed to decode message: \(error)")

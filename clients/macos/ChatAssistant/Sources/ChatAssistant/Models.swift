@@ -255,6 +255,10 @@ struct HistoryData: Decodable {
     let messages: [AnyCodable]
 }
 
+struct ProactiveData: Decodable {
+    let message: String
+}
+
 enum WSServerMessage: Decodable {
     case connection(data: WSConnectionData)
     case textDelta(content: String)
@@ -268,6 +272,7 @@ enum WSServerMessage: Decodable {
     case done(finalText: String, usage: TokenUsageData?)
     case state(data: WSStateData)
     case history(messages: [AnyCodable])
+    case proactive(message: String)
     
     enum CodingKeys: String, CodingKey {
         case type, data
@@ -314,6 +319,9 @@ enum WSServerMessage: Decodable {
         case "history":
             let data = try container.decode(HistoryData.self, forKey: .data)
             self = .history(messages: data.messages)
+        case "proactive":
+            let data = try container.decode(ProactiveData.self, forKey: .data)
+            self = .proactive(message: data.message)
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown message type: \(type)")
         }
