@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 
 // MARK: - Message Models
 
@@ -481,6 +482,7 @@ struct SlashCommand: Identifiable {
 class AppSettings: ObservableObject {
     @Published var showThinking: Bool = true
     @Published var zoomLevel: Double = 1.0
+    @Published var currentTheme: AppTheme = .standard
     
     static let shared = AppSettings()
     
@@ -496,5 +498,11 @@ class AppSettings: ObservableObject {
     
     func resetZoom() {
         zoomLevel = 1.0
+    }
+    
+    func toggleTheme() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            currentTheme = currentTheme == .standard ? .terminal : .standard
+        }
     }
 }
