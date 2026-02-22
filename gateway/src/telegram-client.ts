@@ -1,7 +1,7 @@
 import type { Context } from "grammy";
 import type { TelegramBot } from "./telegram.js";
 import type { Client, WSServerMessage } from "./types-ws.js";
-import { escapeHtml } from "./telegram.js";
+import { escapeHtml, markdownToTelegramHtml } from "./telegram.js";
 
 /**
  * TelegramClient adapts TelegramBot to the Client interface for BroadcastManager.

@@ -12,6 +12,69 @@ export function escapeHtml(text: string): string {
 }
 
 /**
+ * Converts Markdown to Telegram HTML.
+ * Supports: **bold**, *italic*, `code`, ```code blocks```, ~~strikethrough~~, [links](url)
+ */
+export function markdownToTelegramHtml(text: string): string {
+  // Use a placeholder approach to protect content we want to keep as-is
+  const placeholders: string[] = [];
+  const save = (content: string): string => {
+    placeholders.push(content);
+    return `\x00${placeholders.length - 1}\x00`;
+  };
+  const restore = (str: string): string => {
+    return str.replace(/\x00(\d+)\x00/g, (_, i) => placeholders[parseInt(i, 10)]);
+  };
+
+  let html = text;
+
+  // Code blocks (fenced) - process first
+  html = html.replace(
+    /```(\w+)?\n([\s\S]*?)```/g,
+    (_, lang, code) => {
+      const escapedCode = escapeHtml(code.trimEnd());
+      return save(`<pre>${lang ? `<code class="language-${lang}">` : '<code>'}${escapedCode}</code></pre>`);
+    }
+  );
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, (_, code) => save(`<code>${escapeHtml(code)}</code>`));
+
+  // Bold - **text** or __text__
+  html = html.replace(/\*\*([^*]+?)\*\*|__([^_]+?)__/g, (_, b1, b2) => save(`<b>${escapeHtml(b1 || b2)}</b>`));
+
+  // Italic - *text* or _text_
+  html = html.replace(/(?<![*\w])\*([^*]+?)\*(?![*\w])|(?<![_\w])_([^_]+?)_(?![_\w])/g, (_, i1, i2) => save(`<i>${escapeHtml(i1 || i2)}</i>`));
+
+  // Strikethrough
+  html = html.replace(/~~([^~]+?)~~/g, (_, s) => save(`<s>${escapeHtml(s)}</s>`));
+
+  // Links
+  html = html.replace(/\[([^\]]+?)\]\(([^)]+?)\)/g, (_, linkText, url) => {
+    const safeUrl = url.startsWith('http') ? url : `https://${url}`;
+    return save(`<a href="${safeUrl}">${escapeHtml(linkText)}</a>`);
+  });
+
+  // Escape remaining plain text
+  html = escapeHtml(html);
+
+  // Restore placeholders
+  return restore(html);
+}
+
+/**
+ * Formats assistant text for Telegram with Markdown→HTML conversion.
+ * Wraps truncated content in spoilers.
+ */
+export function formatAssistantText(text: string, isTruncated = false): string {
+  const html = markdownToTelegramHtml(text);
+  if (isTruncated) {
+    return `<tg-spoiler>${html}</tg-spoiler>`;
+  }
+  return html;
+}
+
+/**
  * Formats tool execution output for display in Telegram.
  *
  * @param toolName - The name of the tool (e.g., "bash", "read", "glob")
