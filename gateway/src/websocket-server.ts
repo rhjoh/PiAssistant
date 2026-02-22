@@ -5,6 +5,8 @@ import type { BroadcastManager } from "./broadcast.js";
 import type { Client, WSClientMessage, WSServerMessage } from "./types-ws.js";
 import { config } from "./config.js";
 import { ImageStorage } from "./image-storage.js";
+import { PiClientHandler } from "./pi-client-handler.js";
+import type { PiRpcClient } from "./pi-rpc.js";
 
 interface WSClient extends Client {
   ws: WebSocket;
@@ -16,18 +18,25 @@ interface WSClient extends Client {
  * 
  * All clients connect here and receive the same broadcasts.
  * Telegram is treated as another client via BroadcastManager.
+ * 
+ * Supports two connection types:
+ * - Regular clients (macOS app, web): / (root path)
+ * - Pi TUI clients: /pi-client (native Pi protocol)
  */
 export class WebSocketGateway {
   private wss: WebSocketServer | null = null;
   private clients = new Map<WebSocket, WSClient>();
   private pingInterval: NodeJS.Timeout | null = null;
   private imageStorage: ImageStorage;
+  private piClientHandler: PiClientHandler;
 
   constructor(
     private broadcastManager: BroadcastManager,
+    private pi: PiRpcClient,
     private port: number = 3456
   ) {
     this.imageStorage = new ImageStorage();
+    this.piClientHandler = new PiClientHandler(broadcastManager, pi);
   }
 
   async start(): Promise<void> {
@@ -38,10 +47,12 @@ export class WebSocketGateway {
       // Bind to localhost only for security
       this.wss = new WebSocketServer({
         port: this.port,
-        host: "127.0.0.1"
+        host: "127.0.0.1",
+        // Avoid Bun + ws permessage-deflate CPU spikes with Node-based clients (gateway-bridge).
+        perMessageDeflate: false,
       });
 
-      this.wss.on("connection", (ws) => this.handleConnection(ws));
+      this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
       this.wss.on("error", (err) => {
         console.error("[WebSocket] Server error:", err);
         reject(err);
@@ -53,7 +64,9 @@ export class WebSocketGateway {
       });
 
       // Start heartbeat to detect disconnected clients
-      this.pingInterval = setInterval(() => this.heartbeat(), 30000);
+      const heartbeatInterval = config.heartbeat.intervalMs;
+      this.pingInterval = setInterval(() => this.heartbeat(), heartbeatInterval);
+      console.log(`[WebSocket] Heartbeat interval: ${heartbeatInterval}ms`);
     });
   }
 
@@ -76,7 +89,15 @@ export class WebSocketGateway {
     console.log("[WebSocket] Server stopped");
   }
 
-  private handleConnection(ws: WebSocket): void {
+  private handleConnection(ws: WebSocket, req: { url?: string }): void {
+    // Route Pi TUI clients to the PiClientHandler
+    const pathname = req.url ?? "/";
+    if (pathname === "/pi-client" || pathname.startsWith("/pi-client?")) {
+      this.piClientHandler.handleConnection(ws);
+      return;
+    }
+
+    // Regular client connection
     const clientId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
     
     const client: WSClient = {
@@ -311,19 +332,35 @@ export class WebSocketGateway {
         case "model":
           responseText = await this.broadcastManager.handleModelCommand(args?.[0] || "");
           break;
-          
+
         case "session":
           responseText = await this.broadcastManager.handleSessionCommand();
           break;
-          
+
         case "new":
           responseText = await this.broadcastManager.handleNewCommand();
           break;
-          
+
         case "takeover":
           responseText = await this.broadcastManager.handleTakeoverCommand();
           break;
-          
+
+        case "status": {
+          const state = await this.broadcastManager.getState();
+          if (state.type === "state") {
+            const s = state.data;
+            responseText = [
+              "Gateway status:",
+              `Model: ${s.provider && s.model ? `${s.provider}/${s.model}` : "(unknown)"}`,
+              `Processing: ${s.isProcessing ? "yes" : "no"}`,
+              `Context tokens: ${s.contextTokens ?? "(n/a)"}`,
+            ].join("\n");
+          } else {
+            responseText = "Gateway status unavailable";
+          }
+          break;
+        }
+
         default:
           responseText = `Unknown command: ${command}`;
       }
@@ -474,6 +511,7 @@ export class WebSocketGateway {
   }
 
   private heartbeat(): void {
+    // Heartbeat regular clients
     for (const [ws, client] of this.clients) {
       if (!client.isAlive) {
         console.log(`[WebSocket] Terminating dead connection: ${client.id}`);
@@ -486,5 +524,8 @@ export class WebSocketGateway {
       client.isAlive = false;
       ws.ping();
     }
+
+    // Heartbeat Pi TUI clients
+    this.piClientHandler.heartbeat();
   }
 }

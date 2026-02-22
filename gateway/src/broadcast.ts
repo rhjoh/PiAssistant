@@ -289,7 +289,6 @@ export class BroadcastManager {
 
           // Only broadcast prose deltas (not tool output)
           if (!insideTool) {
-            console.log(`[Broadcast] text_delta: "${msgEvent.delta.slice(0, 50)}${msgEvent.delta.length > 50 ? "..." : ""}"`);
             await this.broadcast({
               type: "text_delta",
               data: { content: msgEvent.delta },
@@ -351,7 +350,27 @@ export class BroadcastManager {
       }
     };
 
+    // Rate limiting for events to prevent CPU spin
+    let lastEventTime = 0;
+    let eventCount = 0;
+    const RATE_WINDOW_MS = 1000;
+    const MAX_EVENTS_PER_WINDOW = 1000;
+
     this.pi.on("event", (event: PiEvent) => {
+      const now = Date.now();
+      if (now - lastEventTime > RATE_WINDOW_MS) {
+        lastEventTime = now;
+        eventCount = 0;
+      }
+      eventCount++;
+      
+      if (eventCount > MAX_EVENTS_PER_WINDOW) {
+        if (eventCount === MAX_EVENTS_PER_WINDOW + 1) {
+          console.error("[Broadcast] Rate limit exceeded - suppressing events");
+        }
+        return;
+      }
+
       eventQueue = eventQueue
         .then(() => handlePiEvent(event))
         .catch((err) => {
@@ -508,42 +527,15 @@ export class BroadcastManager {
   }
 
   private extractTokenUsage(messages: unknown[] | undefined): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number } | undefined {
-    // Truncate thinkingSignature for logging to avoid huge log lines
-    const truncatedMessages = messages?.map((msg: unknown) => {
-      if (typeof msg === "object" && msg !== null) {
-        const m = msg as Record<string, unknown>;
-        if (typeof m.thinkingSignature === "string" && m.thinkingSignature.length > 20) {
-          return { ...m, thinkingSignature: m.thinkingSignature.slice(0, 10) + "..." };
-        }
-        // Also truncate inside content items
-        if (Array.isArray(m.content)) {
-          const truncatedContent = m.content.map((item: unknown) => {
-            if (typeof item === "object" && item !== null) {
-              const it = item as Record<string, unknown>;
-              if (typeof it.thinkingSignature === "string" && it.thinkingSignature.length > 20) {
-                return { ...it, thinkingSignature: it.thinkingSignature.slice(0, 10) + "..." };
-              }
-            }
-            return item;
-          });
-          return { ...m, content: truncatedContent };
-        }
-      }
-      return msg;
-    });
-    console.log("[Broadcast] Extracting token usage from messages:", JSON.stringify(truncatedMessages, null, 2));
     if (!messages || !Array.isArray(messages)) {
-      console.log("[Broadcast] No messages array found");
       return undefined;
     }
-    
+
     // Find the last assistant message with usage data
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i] as { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } };
-      console.log(`[Broadcast] Checking message ${i}: role=${msg.role}, hasUsage=${!!msg.usage}`);
       if (msg.role === "assistant" && msg.usage) {
         const usage = msg.usage;
-        console.log("[Broadcast] Found usage:", usage);
         return {
           input: usage.input || 0,
           output: usage.output || 0,
@@ -554,7 +546,6 @@ export class BroadcastManager {
         };
       }
     }
-    console.log("[Broadcast] No usage data found in messages");
     return undefined;
   }
 
