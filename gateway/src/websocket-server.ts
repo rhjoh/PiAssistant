@@ -13,6 +13,9 @@ import {
   GetStateHandler,
   GetHistoryHandler,
   CommandHandler,
+  PingHandler,
+  GetModelsHandler,
+  SwitchModelHandler,
 } from "./handlers/messages.js";
 
 interface WSClient extends Client {
@@ -43,7 +46,7 @@ export class WebSocketGateway {
     private pi: PiRpcClient,
     private port: number = 3456
   ) {
-    this.imageStorage = new ImageStorage();
+    this.imageStorage = new ImageStorage(config.images.dir);
     this.piClientHandler = new PiClientHandler(broadcastManager, pi);
 
     // Initialize message router with handlers
@@ -54,6 +57,9 @@ export class WebSocketGateway {
       new GetStateHandler(broadcastManager),
       new GetHistoryHandler(this.imageStorage, config.pi.sessionPath),
       new CommandHandler({ broadcastManager }),
+      new PingHandler(),
+      new GetModelsHandler(broadcastManager),
+      new SwitchModelHandler(broadcastManager),
     ]);
   }
 

@@ -12,6 +12,7 @@ import { BroadcastManager } from "./broadcast.js";
 import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
 import { MemoryWatcher } from "./memory-watcher.js";
+import { FileServer } from "./file-server.js";
 
 // Simple timestamp prefix for logs
 const ts = () => new Date().toISOString().slice(11, 23);
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
   console.log(`[${ts()}] [Gateway] Starting Personal OS Gateway...`);
   console.log(`[${ts()}] [Gateway] Pi session: ${config.pi.sessionPath}`);
   console.log(`[${ts()}] [Gateway] Thinking level: ${config.pi.thinkingLevel}`);
+  console.log(`[${ts()}] [Gateway] Image dir: ${config.images.dir}`);
   console.log(`[${ts()}] [Gateway] Architecture: Gateway owns Pi RPC (multi-client mode)`);
 
   // Ensure session directory exists
@@ -84,12 +86,25 @@ async function main(): Promise<void> {
   // Wire up Pi events for logging
   pi.on("event", (event) => {
     if (event.type === "tool_execution_start") {
-      console.log(`[${ts()}] [Pi] Tool: ${event.toolName}`);
+      const args = event.args as Record<string, unknown>;
+      let detail = "";
+      if (event.toolName === "bash" && typeof args?.command === "string") {
+        detail = ` - ${args.command}`;
+      } else if ((event.toolName === "read" || event.toolName === "edit" || event.toolName === "write") && typeof args?.path === "string") {
+        detail = ` - ${args.path}`;
+      } else if (typeof args?.path === "string") {
+        detail = ` - ${args.path}`;
+      } else if (typeof args?.pattern === "string") {
+        detail = ` - ${args.pattern}`;
+      } else if (typeof args?.query === "string") {
+        detail = ` - ${args.query}`;
+      }
+      console.log(`[Pi] Tool: ${event.toolName}${detail}`);
     }
   });
 
   pi.on("toolResult", (toolName, _result) => {
-    console.log(`[${ts()}] [Pi] Tool completed: ${toolName}`);
+    console.log(`[Pi] Tool completed: ${toolName}`);
   });
 
   pi.on("exit", (code) => {
@@ -127,6 +142,10 @@ async function main(): Promise<void> {
   // Start WebSocket server
   console.log(`[${ts()}] [Gateway] Starting WebSocket server...`);
   await wsGateway.start();
+
+  // Start file server for serving images to web UI
+  const fileServer = new FileServer(config.fileServer.port, [config.images.dir]);
+  await fileServer.start();
 
   // Wire up Telegram message handler
   telegram.onMessage(async (text, ctx) => {
@@ -200,6 +219,7 @@ async function main(): Promise<void> {
     heartbeat.stop();
     memoryWatcher.stop();
     wsGateway.stop();
+    fileServer.stop();
     telegram.stop();
     pi.stop();
     process.exit(0);

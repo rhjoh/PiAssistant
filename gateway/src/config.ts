@@ -22,6 +22,15 @@ export const config = {
     cwd: process.env.PI_CWD ?? homedir(),
     thinkingLevel: process.env.PI_THINKING_LEVEL ?? "off",
   },
+  images: {
+    dir: process.env.IMAGE_DIR
+      ?? join(process.env.PI_CWD ?? homedir(), "images"),
+  },
+  fileServer: {
+    port: process.env.FILE_SERVER_PORT
+      ? parseInt(process.env.FILE_SERVER_PORT, 10)
+      : 3457,
+  },
   heartbeat: {
     intervalMs: process.env.HEARTBEAT_INTERVAL_MS
       ? parseInt(process.env.HEARTBEAT_INTERVAL_MS, 10)
@@ -56,5 +65,8 @@ export const config = {
 export function validateConfig(): void {
   if (!config.telegram.token) {
     throw new Error("TELEGRAM_BOT_TOKEN environment variable is required");
+  }
+  if (!Number.isInteger(config.fileServer.port) || config.fileServer.port <= 0) {
+    throw new Error("FILE_SERVER_PORT must be a positive integer");
   }
 }

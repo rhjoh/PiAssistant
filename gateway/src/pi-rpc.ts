@@ -19,6 +19,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private currentText = "";
   private requestId = 0;
   private parseErrorCount = 0;
+  private parseErrorSuppressed = false;
 
   constructor(
     private sessionPath: string,
@@ -293,15 +294,18 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   }
 
   private handleLine(line: string): void {
-    if (!line.trim()) return;
+    const trimmed = line.trim();
+    if (!trimmed) return;
 
-    // Limit logspam for parse errors
-    if (!this.parseErrorCount) this.parseErrorCount = 0;
-    if (this.parseErrorCount > 10) return;
+    // Ignore plain log lines from extensions/non-RPC output.
+    if (!trimmed.startsWith("{")) {
+      return;
+    }
 
     try {
-      const data = JSON.parse(line) as PiEvent | PiResponse;
+      const data = JSON.parse(trimmed) as PiEvent | PiResponse;
       this.parseErrorCount = 0; // Reset on success
+      this.parseErrorSuppressed = false;
 
       if (data.type === "response") {
         this.emit("response", data as PiResponse);
@@ -315,10 +319,11 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       }
     } catch (err) {
       this.parseErrorCount++;
-      if (this.parseErrorCount <= 3) {
-        console.error("[Pi RPC] Failed to parse:", line.slice(0, 200));
-      } else if (this.parseErrorCount === 4) {
+      if (this.parseErrorCount <= 5) {
+        console.error("[Pi RPC] Failed to parse:", trimmed.slice(0, 200));
+      } else if (!this.parseErrorSuppressed) {
         console.error("[Pi RPC] Suppressing further parse errors...");
+        this.parseErrorSuppressed = true;
       }
     }
   }

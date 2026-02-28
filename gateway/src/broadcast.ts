@@ -1,7 +1,7 @@
 import type { EventEmitter } from "node:events";
 import type { PiRpcClient } from "./pi-rpc.js";
 import type { PiEvent } from "./types.js";
-import type { Client, WSServerMessage } from "./types-ws.js";
+import type { Client, WSServerMessage, WSStateData } from "./types-ws.js";
 import type { SessionManager } from "./session-manager.js";
 
 /**
@@ -68,6 +68,12 @@ export class BroadcastManager {
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
     this.currentPrompt = { message, clientIds };
+
+    // Broadcast user message to all OTHER clients (sender already showed it locally)
+    await this.broadcast({
+      type: "user_message",
+      data: { content: message, source: originatingClientId },
+    }, originatingClientId);
 
     // Send prompt to Pi (this starts the streaming)
     // Note: We don't await here - Pi runs asynchronously and emits events
@@ -136,36 +142,23 @@ export class BroadcastManager {
   /**
    * Get current Pi state for new connections
    */
-  async getState(): Promise<WSServerMessage> {
+  async getState(): Promise<{ type: "state"; data: WSStateData }> {
     try {
-      const [stateResponse, statsResponse] = await Promise.all([
-        this.pi.getState(),
-        this.pi.getSessionStats().catch((err) => {
-          console.log("[Broadcast] getSessionStats failed:", err);
-          return null;
-        }),
-      ]);
-      
-      console.log("[Broadcast] getState response:", JSON.stringify(stateResponse.data, null, 2));
-      console.log("[Broadcast] getSessionStats response:", JSON.stringify(statsResponse?.data, null, 2));
+      const stateResponse = await this.pi.getState();
       
       const stateData = stateResponse.data as { 
         model?: { id: string; provider: string };
         messageCount?: number;
       } | undefined;
-      
-      const statsData = statsResponse?.data as { 
-        tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
-      } | undefined;
 
-      console.log("[Broadcast] contextTokens from stats:", statsData?.tokens?.cacheRead);
+      const currentContextTokens = await this.readCurrentContextTokensFromSession();
 
       return {
         type: "state",
         data: {
           model: stateData?.model?.id,
           provider: stateData?.model?.provider,
-          contextTokens: statsData?.tokens?.cacheRead,
+          contextTokens: currentContextTokens ?? undefined,
           isProcessing: false,
         },
       };
@@ -178,6 +171,30 @@ export class BroadcastManager {
         },
       };
     }
+  }
+
+  private async readCurrentContextTokensFromSession(): Promise<number | null> {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const sessionPath = this.sessionManager?.["sessionPath"] || "";
+      if (!sessionPath) return null;
+
+      const content = await readFile(sessionPath, "utf-8");
+      const trimmed = content.trim();
+      if (!trimmed) return null;
+
+      const lines = trimmed.split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = JSON.parse(lines[i]);
+        if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.usage) {
+          const usage = entry.message.usage;
+          return (usage.cacheRead ?? 0) + (usage.inputTokens ?? 0);
+        }
+      }
+    } catch {
+      // ignore - session may be empty/unavailable
+    }
+    return null;
   }
 
   /**
@@ -287,11 +304,15 @@ export class BroadcastManager {
         if (msgEvent.type === "text_delta") {
           currentText += msgEvent.delta;
 
-          // Only broadcast prose deltas (not tool output)
-          if (!insideTool) {
+          // Skip heartbeat responses
+          const delta = msgEvent.delta;
+          if (delta.includes("[[NO_ACTION]]") || delta.startsWith("[Heartbeat]")) {
+            // Heartbeat response - don't broadcast
+          } else if (!insideTool) {
+            // Only broadcast prose deltas (not tool output)
             await this.broadcast({
               type: "text_delta",
-              data: { content: msgEvent.delta },
+              data: { content: delta },
             });
           }
         }
@@ -303,10 +324,14 @@ export class BroadcastManager {
 
         if (msgEvent.type === "thinking_delta") {
           currentThinking += msgEvent.delta;
-          await this.broadcast({
-            type: "thinking_delta",
-            data: { content: msgEvent.delta },
-          });
+          // Skip heartbeat responses
+          const delta = msgEvent.delta;
+          if (!delta.includes("[[NO_ACTION]]") && !delta.startsWith("[Heartbeat]")) {
+            await this.broadcast({
+              type: "thinking_delta",
+              data: { content: delta },
+            });
+          }
         }
 
         if (msgEvent.type === "thinking_done") {
@@ -337,7 +362,9 @@ export class BroadcastManager {
         const messages = (event as { messages?: unknown[] }).messages;
         const usage = this.extractTokenUsage(messages);
 
-        console.log(`[Broadcast] done: ${imageExtractions.textOnly.slice(0, 100)}${imageExtractions.textOnly.length > 100 ? '...' : ''}`);
+        if (usage) {
+          console.log(`[Broadcast] Done: ${usage.total.toLocaleString()} tokens (in=${usage.input} out=${usage.output} cache=${usage.cacheRead}) $${(usage.cost ?? 0).toFixed(4)}`);
+        }
         await this.broadcast({
           type: "done",
           data: { finalText: imageExtractions.textOnly, usage },
@@ -533,16 +560,34 @@ export class BroadcastManager {
 
     // Find the last assistant message with usage data
     for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i] as { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } };
+      const msg = messages[i] as {
+        role?: string;
+        usage?: {
+          input?: number;
+          output?: number;
+          cacheRead?: number;
+          cacheWrite?: number;
+          total?: number;
+          totalTokens?: number;
+          cost?: { total?: number } | number
+        }
+      };
       if (msg.role === "assistant" && msg.usage) {
         const usage = msg.usage;
+        // Handle different cost formats (number or { total: number })
+        let costValue: number | undefined;
+        if (typeof usage.cost === "number") {
+          costValue = usage.cost;
+        } else if (usage.cost && typeof usage.cost === "object") {
+          costValue = usage.cost.total;
+        }
         return {
           input: usage.input || 0,
           output: usage.output || 0,
           cacheRead: usage.cacheRead || 0,
           cacheWrite: usage.cacheWrite || 0,
-          total: (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0),
-          cost: usage.cost?.total,
+          total: usage.total ?? usage.totalTokens ?? ((usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0)),
+          cost: costValue,
         };
       }
     }
@@ -614,10 +659,45 @@ export class BroadcastManager {
     }
   }
 
+  /**
+   * Get list of available models for WebSocket clients
+   */
+  async getAvailableModels(): Promise<Array<{ provider: string; id: string; name: string }>> {
+    const response = await this.pi.getAvailableModels();
+    if (!response.success || !response.data) {
+      return [];
+    }
+    const data = response.data as { models: Array<{ provider: string; id: string; name: string }> };
+    return data.models ?? [];
+  }
+
+  /**
+   * Switch to a specific model by provider and id
+   */
+  async switchModel(provider: string, modelId: string): Promise<{ success: boolean; model?: { provider: string; id: string; name: string }; error?: string }> {
+    try {
+      // Get available models to validate and get name
+      const models = await this.getAvailableModels();
+      const model = models.find(m => m.provider === provider && m.id === modelId);
+      
+      if (!model) {
+        return { success: false, error: `Model ${provider}/${modelId} not found` };
+      }
+
+      await this.pi.setModelViaRpc(provider, modelId);
+      return { success: true, model };
+    } catch (err) {
+      return { 
+        success: false, 
+        error: err instanceof Error ? err.message : "Failed to switch model" 
+      };
+    }
+  }
+
   async handleSessionCommand(): Promise<string> {
     const state = await this.pi.getState();
     const stateData = state.data as { 
-      model?: { id: string; provider: string };
+      model?: { id: string; provider: string; name?: string };
       contextWindow?: number;
       compactThreshold?: number;
     } | undefined;
@@ -625,6 +705,24 @@ export class BroadcastManager {
     const fmt = (n: number) => n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`;
     
     const lines: string[] = [];
+    
+    // Get current token usage from session file
+    let currentTokens = 0;
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const content = await readFile(this.sessionManager?.['sessionPath'] || "", "utf-8");
+      const lines = content.trim().split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = JSON.parse(lines[i]);
+        if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.usage) {
+          const u = entry.message.usage;
+          currentTokens = (u.cacheRead ?? 0) + (u.inputTokens ?? 0);
+          break;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
     
     if (stateData?.model) {
       lines.push(`**Model:** ${stateData.model.provider}/${stateData.model.id}`);
@@ -636,9 +734,58 @@ export class BroadcastManager {
     
     if (stateData?.compactThreshold) {
       lines.push(`**Compact Threshold:** ${fmt(stateData.compactThreshold)} tokens`);
+      if (currentTokens > 0) {
+        const pct = Math.min(100, Math.round((currentTokens / stateData.compactThreshold) * 100));
+        lines.push(`**Current Usage:** ${fmt(currentTokens)} tokens (${pct}%)`);
+        if (pct >= 90) {
+          lines.push(`⚠️ **Compaction imminent** - context approaching threshold`);
+        } else if (pct >= 75) {
+          lines.push(`⚡ **Compaction approaching** - consider starting fresh soon`);
+        }
+      }
     }
     
+    // Compaction count
+    const compactionCount = this.sessionManager?.['compactionCount'] ?? 0;
+    lines.push(`**Compactions this session:** ${compactionCount}`);
+    
     return lines.length > 0 ? lines.join("\n") : "Session info unavailable";
+  }
+  
+  /**
+   * Get detailed session status for WebSocket clients
+   */
+  async getSessionStatus(): Promise<{
+    model?: { provider: string; id: string; name?: string };
+    contextWindow?: number;
+    compactThreshold?: number;
+    currentTokens: number;
+    percentage: number;
+    compactionCount: number;
+  }> {
+    const state = await this.pi.getState();
+    const stateData = state.data as { 
+      model?: { id: string; provider: string; name?: string };
+      contextWindow?: number;
+      compactThreshold?: number;
+    } | undefined;
+    
+    // Get current token usage from session file
+    const currentTokens = (await this.readCurrentContextTokensFromSession()) ?? 0;
+    
+    const compactThreshold = stateData?.compactThreshold ?? 0;
+    const percentage = compactThreshold > 0 
+      ? Math.min(100, Math.round((currentTokens / compactThreshold) * 100))
+      : 0;
+    
+    return {
+      model: stateData?.model,
+      contextWindow: stateData?.contextWindow,
+      compactThreshold,
+      currentTokens,
+      percentage,
+      compactionCount: this.sessionManager?.['compactionCount'] ?? 0,
+    };
   }
 
   async handleNewCommand(): Promise<string> {
