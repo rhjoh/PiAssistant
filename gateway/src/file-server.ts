@@ -2,6 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
+import type { StatusProvider } from "./status-types.js";
 
 /**
  * Simple HTTP file server for serving local images to web UI clients.
@@ -10,9 +11,18 @@ import { lookup } from "mime-types";
 export class FileServer {
   private server: ReturnType<typeof createServer> | null = null;
   private readonly allowedRoots: string[];
+  private statusProvider: StatusProvider | null = null;
 
-  constructor(private port: number = 3457, allowedRoots: string[] = []) {
+  constructor(
+    private port: number = 3457,
+    allowedRoots: string[] = [],
+    private wsPort: number = 3456
+  ) {
     this.allowedRoots = allowedRoots.map((root) => resolve(this.expandHome(root)));
+  }
+
+  setStatusProvider(provider: StatusProvider): void {
+    this.statusProvider = provider;
   }
 
   start(): Promise<void> {
@@ -42,6 +52,12 @@ export class FileServer {
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const url = req.url ?? "/";
+
+    // Status endpoint
+    if (url === "/status" && req.method === "GET") {
+      this.handleStatusRequest(res);
+      return;
+    }
 
     // Only serve /files/* paths
     if (!url.startsWith("/files/")) {
@@ -105,6 +121,21 @@ export class FileServer {
         res.end("Internal server error");
       }
     });
+  }
+
+  private handleStatusRequest(res: ServerResponse): void {
+    if (!this.statusProvider) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Status not available" }));
+      return;
+    }
+
+    const status = this.statusProvider.getStatus();
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache",
+    });
+    res.end(JSON.stringify(status, null, 2));
   }
 
   private expandHome(pathValue: string): string {

@@ -26,6 +26,7 @@ type MemoryWatcherOptions = {
   intervalMs: number;
   activeWindowMs: number;
   memoryPromptPath: string;
+  onTick?: () => void;
 };
 
 export class MemoryWatcher {
@@ -54,6 +55,7 @@ export class MemoryWatcher {
   private async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    this.options.onTick?.();
     console.log(`[MemoryWatcher] Tick started`);
     try {
       const entries = await this.collectNewEntries();

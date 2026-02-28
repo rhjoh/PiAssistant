@@ -10,12 +10,14 @@ const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 export interface HeartbeatOptions {
   intervalMs?: number;
   heartbeatFile?: string;
+  onTick?: () => void;
 }
 
 export class Heartbeat {
   private timer: NodeJS.Timeout | null = null;
   private intervalMs: number;
   private heartbeatFile: string;
+  private onTick?: () => void;
 
   constructor(
     private pi: PiRpcClient,
@@ -25,6 +27,7 @@ export class Heartbeat {
   ) {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.heartbeatFile = options.heartbeatFile ?? "prompts/heartbeat.md";
+    this.onTick = options.onTick;
   }
 
   start(): void {
@@ -75,6 +78,7 @@ export class Heartbeat {
     }
 
     console.log(`[Heartbeat] Sending heartbeat at ${timeStr}`);
+    this.onTick?.();
 
     try {
       const response = await this.pi.prompt(prompt);

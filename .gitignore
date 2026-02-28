@@ -19,3 +19,7 @@ clients/**/.build/
 DerivedData/
 *.xcuserstate
 .swiftpm/
+
+# Runtime artifacts
+*.pid
+*.log

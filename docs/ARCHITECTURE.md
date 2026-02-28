@@ -431,6 +431,32 @@ HEARTBEAT_INTERVAL_MS=900000      # 15 min
 MEMORY_MODEL=glm-4.7              # Cheaper for memory extraction
 ```
 
+### Service CLI (`personalos`)
+
+Manage the gateway as a background service or run it in foreground:
+
+```bash
+# Foreground
+personalos run
+
+# Daemon-style lifecycle
+personalos start
+personalos stop
+personalos restart
+personalos status
+
+# Logs
+personalos logs
+personalos logs -f
+```
+
+Runtime paths (all configurable in `gateway/.env`):
+
+- `RUNTIME_DIR` (default: `<PI_CWD>/run`)
+- `LOG_DIR` (default: `<PI_CWD>/logs`)
+- `PID_FILE` (default: `<PI_CWD>/run/personalos.pid`)
+- `LOG_FILE` (default: `<PI_CWD>/logs/gateway.log`)
+
 ### Pi Extension (gateway-bridge)
 Auto-detects Gateway at `ws://localhost:3456/pi-client`. No configuration needed.
 
