@@ -9,7 +9,10 @@ export type WSClientMessage =
   | { type: "abort" }
   | { type: "get_state" }
   | { type: "get_history"; limit?: number }
-  | { type: "command"; command: string; args?: string[] };
+  | { type: "get_models" }
+  | { type: "switch_model"; provider: string; modelId: string }
+  | { type: "command"; command: string; args?: string[] }
+  | { type: "ping"; timestamp?: number };
 
 export interface WSImageAttachment {
   data: string; // base64 encoded
@@ -19,6 +22,7 @@ export interface WSImageAttachment {
 // Gateway → Client
 export type WSServerMessage =
   | { type: "connection"; data: WSConnectionData }
+  | { type: "user_message"; data: { content: string; source: string } }
   | { type: "text_delta"; data: { content: string } }
   | { type: "thinking_delta"; data: { content: string } }
   | { type: "thinking_done"; data: { content: string } }
@@ -35,7 +39,16 @@ export type WSServerMessage =
   | { type: "usage"; data: TokenUsage }
   | { type: "state"; data: WSStateData }
   | { type: "history"; data: { messages: unknown[] } }
+  | { type: "models"; data: { models: WSModelInfo[]; current?: WSModelInfo } }
+  | { type: "model_switched"; data: { success: boolean; model?: WSModelInfo; error?: string } }
+  | { type: "pong"; data: { timestamp: number } }
   | { type: "ping" };
+
+export interface WSModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+}
 
 export interface WSConnectionData {
   connected: true;

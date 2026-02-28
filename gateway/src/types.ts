@@ -43,6 +43,23 @@ export interface PiState {
   pendingMessageCount: number;
 }
 
+// Token usage from assistant messages
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+}
+
+// Assistant message in agent_end events
+export interface AssistantMessage {
+  role: "assistant";
+  content: unknown[];
+  usage?: TokenUsage;
+  [key: string]: unknown;
+}
+
 // Pi RPC Event Types (streamed from Pi)
 export type PiEvent =
   | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
@@ -50,7 +67,7 @@ export type PiEvent =
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; args?: unknown }
-  | { type: "agent_end" }
+  | { type: "agent_end"; messages?: AssistantMessage[] }
   | { type: "response"; id?: string; command: string; success: boolean }
   | { type: "auto_compaction_start"; reason: "threshold" | "overflow" }
   | { type: "auto_compaction_end"; result: CompactionResult | null; aborted: boolean; willRetry: boolean };

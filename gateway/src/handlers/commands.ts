@@ -43,11 +43,12 @@ class StatusCommand implements Command {
     const state = await ctx.broadcastManager.getState();
     if (state.type === "state") {
       const s = state.data;
+      const fmt = (n: number | undefined) => n?.toLocaleString() ?? "(n/a)";
       return [
         "Gateway status:",
         `Model: ${s.provider && s.model ? `${s.provider}/${s.model}` : "(unknown)"}`,
         `Processing: ${s.isProcessing ? "yes" : "no"}`,
-        `Context tokens: ${s.contextTokens ?? "(n/a)"}`,
+        `Context tokens: ${fmt(s.contextTokens)}`,
       ].join("\n");
     }
     return "Gateway status unavailable";

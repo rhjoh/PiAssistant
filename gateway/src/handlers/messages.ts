@@ -291,6 +291,85 @@ export class CommandHandler implements MessageHandler {
   }
 }
 
+export class PingHandler implements MessageHandler {
+  canHandle(type: string): boolean {
+    return type === "ping";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "ping") return;
+
+    client.send({
+      type: "pong",
+      data: { timestamp: message.timestamp || Date.now() },
+    });
+  }
+}
+
+export class GetModelsHandler implements MessageHandler {
+  constructor(private broadcastManager: BroadcastManager) {}
+
+  canHandle(type: string): boolean {
+    return type === "get_models";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "get_models") return;
+
+    try {
+      const models = await this.broadcastManager.getAvailableModels();
+      const state = await this.broadcastManager.getState();
+      const stateData = state.data as { model?: { provider: string; id: string; name: string } } | undefined;
+      
+      client.send({
+        type: "models",
+        data: {
+          models,
+          current: stateData?.model,
+        },
+      });
+    } catch (err) {
+      console.error("[WebSocket] Failed to get models:", err);
+      client.send({
+        type: "models",
+        data: { models: [] },
+      });
+    }
+  }
+}
+
+export class SwitchModelHandler implements MessageHandler {
+  constructor(private broadcastManager: BroadcastManager) {}
+
+  canHandle(type: string): boolean {
+    return type === "switch_model";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "switch_model") return;
+
+    const { provider, modelId } = message;
+    
+    try {
+      const result = await this.broadcastManager.switchModel(provider, modelId);
+      
+      client.send({
+        type: "model_switched",
+        data: result,
+      });
+    } catch (err) {
+      console.error("[WebSocket] Failed to switch model:", err);
+      client.send({
+        type: "model_switched",
+        data: { 
+          success: false, 
+          error: err instanceof Error ? err.message : "Failed to switch model" 
+        },
+      });
+    }
+  }
+}
+
 export class MessageRouter {
   private handlers: MessageHandler[] = [];
 

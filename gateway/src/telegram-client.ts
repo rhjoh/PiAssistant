@@ -95,6 +95,8 @@ export class TelegramClient implements Client {
       case "connection":
       case "state":
       case "history":
+      case "thinking_delta":
+      case "thinking_done":
         // These are not typically sent to Telegram
         break;
     }
