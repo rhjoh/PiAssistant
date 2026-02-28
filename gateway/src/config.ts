@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 // Load .env before reading any env vars
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..", "..");
-dotenvConfig({ path: join(__dirname, "..", ".env") });
+dotenvConfig({ path: join(__dirname, "..", ".env"), quiet: true });
 
 export const config = {
   telegram: {
@@ -30,6 +30,16 @@ export const config = {
     port: process.env.FILE_SERVER_PORT
       ? parseInt(process.env.FILE_SERVER_PORT, 10)
       : 3457,
+  },
+  runtime: {
+    runDir: process.env.RUNTIME_DIR
+      ?? join(process.env.PI_CWD ?? homedir(), "run"),
+    logsDir: process.env.LOG_DIR
+      ?? join(process.env.PI_CWD ?? homedir(), "logs"),
+    pidFile: process.env.PID_FILE
+      ?? join(process.env.PI_CWD ?? homedir(), "run", "personalos.pid"),
+    logFile: process.env.LOG_FILE
+      ?? join(process.env.PI_CWD ?? homedir(), "logs", "gateway.log"),
   },
   heartbeat: {
     intervalMs: process.env.HEARTBEAT_INTERVAL_MS

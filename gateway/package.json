@@ -2,9 +2,13 @@
   "name": "personal-os-gateway",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "personalos": "./bin/personalos.mjs"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "cli": "node ./bin/personalos.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,md}\"",
