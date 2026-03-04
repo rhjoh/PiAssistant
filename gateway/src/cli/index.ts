@@ -43,6 +43,8 @@ Commands:
              --webui    Also start Web UI dev server (http://127.0.0.1:5173)
   stop       Stop background gateway
   restart    Restart background gateway
+             --webui       Force start Web UI on restart
+             --no-webui    Force disable Web UI on restart
   status     Show gateway process status
   logs       Show recent logs
   logs -f    Follow logs
@@ -129,6 +131,26 @@ function parseStartOptions(args: string[]): StartOptions {
       continue;
     }
     throw new Error(`Unknown start option: ${arg}`);
+  }
+  return options;
+}
+
+interface RestartOptions {
+  webui?: boolean;
+}
+
+function parseRestartOptions(args: string[]): RestartOptions {
+  const options: RestartOptions = {};
+  for (const arg of args) {
+    if (arg === "--webui") {
+      options.webui = true;
+      continue;
+    }
+    if (arg === "--no-webui") {
+      options.webui = false;
+      continue;
+    }
+    throw new Error(`Unknown restart option: ${arg}`);
   }
   return options;
 }
@@ -249,6 +271,18 @@ async function stopCommand(): Promise<void> {
     }
     await rm(config.runtime.pidFile, { force: true });
   }
+}
+
+async function restartCommand(args: string[]): Promise<void> {
+  await cleanupStalePidFile();
+  const existing = await readPidState();
+  const options = parseRestartOptions(args);
+
+  // Preserve prior webui mode unless caller explicitly overrides it.
+  const shouldStartWebui = options.webui ?? Boolean(existing?.webui);
+
+  await stopCommand();
+  await startCommand(shouldStartWebui ? ["--webui"] : []);
 }
 
 function formatDuration(ms: number): string {
@@ -374,8 +408,7 @@ async function main(): Promise<void> {
       await stopCommand();
       return;
     case "restart":
-      await stopCommand();
-      await startCommand(args);
+      await restartCommand(args);
       return;
     case "status":
       await statusCommand();
