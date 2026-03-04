@@ -151,7 +151,11 @@ export async function startGateway(): Promise<void> {
       });
     },
     config.pi.cwd,
-    { intervalMs: config.heartbeat.intervalMs, onTick: () => statusProvider.recordHeartbeat() }
+    {
+      intervalMs: config.heartbeat.intervalMs,
+      onTick: () => statusProvider.recordHeartbeat(),
+      isBusy: () => broadcastManager.isPromptInFlight(),
+    }
   );
   heartbeat.start();
 

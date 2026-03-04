@@ -11,6 +11,7 @@ export interface HeartbeatOptions {
   intervalMs?: number;
   heartbeatFile?: string;
   onTick?: () => void;
+  isBusy?: () => boolean;
 }
 
 export class Heartbeat {
@@ -18,6 +19,7 @@ export class Heartbeat {
   private intervalMs: number;
   private heartbeatFile: string;
   private onTick?: () => void;
+  private isBusy?: () => boolean;
 
   constructor(
     private pi: PiRpcClient,
@@ -28,6 +30,7 @@ export class Heartbeat {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.heartbeatFile = options.heartbeatFile ?? "prompts/heartbeat.md";
     this.onTick = options.onTick;
+    this.isBusy = options.isBusy;
   }
 
   start(): void {
@@ -53,6 +56,10 @@ export class Heartbeat {
   private async tick(): Promise<void> {
     if (!this.pi.isRunning) {
       console.log("[Heartbeat] Skipping - Pi not running");
+      return;
+    }
+    if (this.isBusy?.()) {
+      console.log("[Heartbeat] Skipping - user prompt in progress");
       return;
     }
 
