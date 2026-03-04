@@ -14,6 +14,8 @@ import {
   GetHistoryHandler,
   CommandHandler,
   PingHandler,
+  ToolCallHandler,
+  ToolResultHandler,
   GetModelsHandler,
   SwitchModelHandler,
 } from "./handlers/messages.js";
@@ -57,6 +59,8 @@ export class WebSocketGateway {
       new GetStateHandler(broadcastManager),
       new GetHistoryHandler(this.imageStorage, config.pi.sessionPath),
       new CommandHandler({ broadcastManager }),
+      new ToolCallHandler(broadcastManager),
+      new ToolResultHandler(broadcastManager),
       new PingHandler(),
       new GetModelsHandler(broadcastManager),
       new SwitchModelHandler(broadcastManager),
@@ -199,7 +203,9 @@ export class WebSocketGateway {
         ? data.toString()
         : Buffer.from(data as ArrayBuffer).toString();
       const message = JSON.parse(dataStr) as WSClientMessage;
-      console.log(`[WebSocket] Received ${message.type} from ${client.id}`);
+      if (message.type !== "ping") {
+        console.log(`[WebSocket] Received ${message.type} from ${client.id}`);
+      }
 
       await this.messageRouter.route(client, message);
     } catch (err) {
