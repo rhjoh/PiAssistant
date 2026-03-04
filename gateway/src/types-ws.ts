@@ -6,6 +6,8 @@
 export type WSClientMessage =
   | { type: "prompt"; message: string; id?: string }
   | { type: "prompt_with_images"; message: string; images: WSImageAttachment[]; id?: string }
+  | { type: "tool_call"; call_id: string; name: string; args?: Record<string, unknown> }
+  | { type: "tool_result"; call_id: string; name: string; ok: boolean; data: unknown }
   | { type: "abort" }
   | { type: "get_state" }
   | { type: "get_history"; limit?: number }
@@ -42,7 +44,20 @@ export type WSServerMessage =
   | { type: "models"; data: { models: WSModelInfo[]; current?: WSModelInfo } }
   | { type: "model_switched"; data: { success: boolean; model?: WSModelInfo; error?: string } }
   | { type: "pong"; data: { timestamp: number } }
-  | { type: "ping" };
+  | { type: "ping" }
+  | {
+      type: "tool_call";
+      call_id: string;
+      name: string;
+      args?: Record<string, unknown>;
+    }
+  | {
+      type: "tool_result";
+      call_id: string;
+      name: string;
+      ok: boolean;
+      data: unknown;
+    };
 
 export interface WSModelInfo {
   provider: string;
