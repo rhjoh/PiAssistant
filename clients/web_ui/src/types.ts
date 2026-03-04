@@ -31,11 +31,12 @@ export interface WSMessage {
 }
 
 export interface SessionStats {
-  totalTokens: number;
-  totalInput: number;
-  totalOutput: number;
-  totalCacheRead: number;
-  totalCost: number;
+  currentContextTokens: number;
+  lastTurnTokens: number;
+  lastInput: number;
+  lastOutput: number;
+  lastCacheRead: number;
+  lastCost: number;
   messageCount: number;
 }
 

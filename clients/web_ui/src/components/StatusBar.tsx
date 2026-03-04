@@ -87,11 +87,16 @@ export function StatusBar({ sessionId, messageCount, isConnected, gatewayUrl, se
           <>
             <span style={{ color: 'var(--border-color-strong)' }}>|</span>
             <span style={{ color: 'var(--text-secondary)' }}>
-              {fmt(sessionStats.totalTokens)} tokens
+              {fmt(sessionStats.currentContextTokens)} ctx
             </span>
             <span style={{ color: 'var(--text-secondary)' }}>
-              ${sessionStats.totalCost.toFixed(3)}
+              turn {fmt(sessionStats.lastTurnTokens)}
             </span>
+            {sessionStats.lastCost > 0 && (
+              <span style={{ color: 'var(--text-secondary)' }}>
+                ${sessionStats.lastCost.toFixed(3)}
+              </span>
+            )}
             {contextPercentage !== undefined && contextPercentage >= 80 && (
               <span 
                 style={{ 
