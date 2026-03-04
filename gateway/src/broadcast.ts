@@ -16,7 +16,9 @@ import type { SessionManager } from "./session-manager.js";
  */
 export class BroadcastManager {
   private clients = new Map<string, Client>();
-  private currentPrompt: { message: string; clientIds: Set<string> } | null = null;
+  private currentPrompt:
+    | { message: string; clientIds: Set<string>; startedAt: number; originClientId: string }
+    | null = null;
   private sessionManager: SessionManager | null = null;
 
   constructor(private pi: PiRpcClient) {
@@ -67,7 +69,7 @@ export class BroadcastManager {
   async sendPrompt(message: string, originatingClientId: string): Promise<Set<string>> {
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
-    this.currentPrompt = { message, clientIds };
+    this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
 
     // Broadcast user message to all OTHER clients (sender already showed it locally)
     await this.broadcast({
@@ -79,6 +81,7 @@ export class BroadcastManager {
     // Note: We don't await here - Pi runs asynchronously and emits events
     this.pi.prompt(message).catch((err) => {
       console.error("[Broadcast] Pi prompt error:", err);
+      this.currentPrompt = null;
       this.broadcast({
         type: "error",
         data: { message: err instanceof Error ? err.message : "Unknown error" },
@@ -99,7 +102,7 @@ export class BroadcastManager {
   ): Promise<Set<string>> {
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
-    this.currentPrompt = { message, clientIds };
+    this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
 
     console.log(`[Broadcast] Sending prompt with ${images.length} image(s) to Pi`);
 
@@ -109,6 +112,7 @@ export class BroadcastManager {
     const piImages = images.map(({ data, mimeType }) => ({ data, mimeType }));
     this.pi.promptWithImages(message, piImages).catch((err) => {
       console.error("[Broadcast] Pi promptWithImages error:", err);
+      this.currentPrompt = null;
       this.broadcast({
         type: "error",
         data: { message: err instanceof Error ? err.message : "Unknown error" },
@@ -202,6 +206,10 @@ export class BroadcastManager {
    */
   abort(): void {
     this.pi.abort();
+  }
+
+  isPromptInFlight(): boolean {
+    return this.currentPrompt !== null;
   }
 
   private setupPiListeners(): void {
@@ -346,6 +354,8 @@ export class BroadcastManager {
       // Handle completion
       if (event.type === "agent_end") {
         const proseResponse = currentText;
+        const completedPrompt = this.currentPrompt;
+        const durationMs = completedPrompt ? Date.now() - completedPrompt.startedAt : undefined;
 
         const imageExtractions = this.extractMarkdownImages(proseResponse);
         for (const image of imageExtractions.images) {
@@ -363,7 +373,15 @@ export class BroadcastManager {
         const usage = this.extractTokenUsage(messages);
 
         if (usage) {
-          console.log(`[Broadcast] Done: ${usage.total.toLocaleString()} tokens (in=${usage.input} out=${usage.output} cache=${usage.cacheRead}) $${(usage.cost ?? 0).toFixed(4)}`);
+          const truncatedResponse = proseResponse.length > 200 
+            ? proseResponse.slice(0, 200).replace(/\s+/g, " ").trim() + "..."
+            : proseResponse.replace(/\s+/g, " ").trim();
+          const durationText = durationMs !== undefined ? ` | Duration: ${(durationMs / 1000).toFixed(1)}s` : "";
+          console.log(
+            `[Broadcast] Done: ${usage.total.toLocaleString()} tokens (in=${usage.input} out=${usage.output} cache=${usage.cacheRead}) $${(usage.cost ?? 0).toFixed(4)}${durationText} | Response: ${truncatedResponse || "(empty)"}`
+          );
+        } else if (durationMs !== undefined) {
+          console.log(`[Broadcast] Done: Duration ${(durationMs / 1000).toFixed(1)}s`);
         }
         await this.broadcast({
           type: "done",
