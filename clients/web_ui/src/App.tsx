@@ -45,6 +45,28 @@ function dataUrlToAttachment(dataUrl: string): { mimeType: string; data: string 
   return { mimeType, data };
 }
 
+function normalizeTokenUsage(usage: unknown): TokenUsage | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const u = usage as {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+    totalTokens?: number;
+    cost?: number | { total?: number };
+  };
+
+  const input = u.input ?? 0;
+  const output = u.output ?? 0;
+  const cacheRead = u.cacheRead ?? 0;
+  const cacheWrite = u.cacheWrite ?? 0;
+  const total = u.total ?? u.totalTokens ?? (input + output + cacheRead + cacheWrite);
+  const cost = typeof u.cost === 'number' ? u.cost : u.cost?.total;
+
+  return { input, output, cacheRead, cacheWrite, total, cost };
+}
+
 export default function App() {
   const [bootComplete, setBootComplete] = useState(false);
   const [sessionId] = useState(() => generateSessionId());
@@ -205,7 +227,7 @@ export default function App() {
               role: 'assistant' as const,
               content,
               isStreaming: false,
-              tokenUsage: m.usage as TokenUsage | undefined,
+              tokenUsage: normalizeTokenUsage(m.usage),
             });
             continue;
           }
@@ -534,7 +556,10 @@ export default function App() {
 
       case 'done': {
         setIsProcessing(false);
-        const doneData = msg.data as { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number } } | undefined;
+        const doneData = msg.data as {
+          finalText?: string;
+          usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
+        } | undefined;
         const currentId = streamingIdRef.current;
         if (currentId) {
           setMessages(prev => {
@@ -545,7 +570,21 @@ export default function App() {
             }
             return prev.map(m =>
               m.id === currentId
-                ? { ...m, isStreaming: false, tokenUsage: doneData?.usage }
+                ? (() => {
+                    const finalText = doneData?.finalText?.trim();
+                    const currentContent = Array.isArray(m.content) ? m.content : [];
+                    const withoutText = currentContent.filter(part => part.type !== 'text');
+                    const mergedContent = finalText
+                      ? [{ type: 'text' as const, content: finalText }, ...withoutText]
+                      : currentContent;
+
+                    return {
+                      ...m,
+                      content: mergedContent,
+                      isStreaming: false,
+                      tokenUsage: normalizeTokenUsage(doneData?.usage),
+                    };
+                  })()
                 : m
             );
           });
@@ -654,6 +693,15 @@ export default function App() {
       return;
     }
 
+    if (text === '/new') {
+      send({ type: 'command', command: 'new', args: [] });
+      setMessages([]);
+      streamingIdRef.current = null;
+      skippedHeartbeatRef.current = false;
+      setIsProcessing(false);
+      return;
+    }
+
     const userMsgId = `usr-${Date.now()}`;
     const aiMsgId = `ai-${Date.now()}-stream`;
 
@@ -729,13 +777,19 @@ export default function App() {
     }
   }, [bootComplete]);
 
-  // Calculate session stats from accumulated message token usage
+  const latestUsage = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.tokenUsage)
+    ?.tokenUsage;
+
+  // Status bar stats are based on the latest assistant turn, not cumulative sums.
   const sessionStats: SessionStats = {
-    totalTokens: messages.reduce((sum, m) => sum + (m.tokenUsage?.total ?? 0), 0),
-    totalInput: messages.reduce((sum, m) => sum + (m.tokenUsage?.input ?? 0), 0),
-    totalOutput: messages.reduce((sum, m) => sum + (m.tokenUsage?.output ?? 0), 0),
-    totalCacheRead: messages.reduce((sum, m) => sum + (m.tokenUsage?.cacheRead ?? 0), 0),
-    totalCost: messages.reduce((sum, m) => sum + (m.tokenUsage?.cost ?? 0), 0),
+    currentContextTokens: (latestUsage?.cacheRead ?? 0) + (latestUsage?.input ?? 0),
+    lastTurnTokens: latestUsage?.total ?? 0,
+    lastInput: latestUsage?.input ?? 0,
+    lastOutput: latestUsage?.output ?? 0,
+    lastCacheRead: latestUsage?.cacheRead ?? 0,
+    lastCost: latestUsage?.cost ?? 0,
     messageCount: messages.length,
   };
 
@@ -745,7 +799,7 @@ export default function App() {
   const estimatedContextWindow = 200000;
   const reserveTokens = 16384;
   const compactThreshold = estimatedContextWindow - reserveTokens;
-  const currentContextTokens = sessionStats.totalCacheRead + sessionStats.totalInput;
+  const currentContextTokens = sessionStats.currentContextTokens;
   const contextPercentage = Math.min(100, Math.round((currentContextTokens / compactThreshold) * 100));
 
   if (!bootComplete) {
