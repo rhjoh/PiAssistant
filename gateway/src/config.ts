@@ -14,6 +14,7 @@ export const config = {
     allowedUserId: process.env.TELEGRAM_ALLOWED_USER_ID
       ? parseInt(process.env.TELEGRAM_ALLOWED_USER_ID, 10)
       : null,
+    useMessageDraftStreaming: process.env.TELEGRAM_USE_MESSAGE_DRAFT_STREAMING === "true",
   },
   pi: {
     sessionPath:
