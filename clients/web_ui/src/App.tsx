@@ -67,6 +67,34 @@ function normalizeTokenUsage(usage: unknown): TokenUsage | undefined {
   return { input, output, cacheRead, cacheWrite, total, cost };
 }
 
+function mergeHistoryMessages(prev: ChatMessage[], loaded: ChatMessage[]): ChatMessage[] {
+  const mergedById = new Map<string, ChatMessage>();
+
+  // History is authoritative for persisted rows.
+  for (const msg of loaded) {
+    mergedById.set(msg.id, msg);
+  }
+
+  // Preserve local-only streaming rows so reconnect history doesn't clobber active UI state.
+  for (const msg of prev) {
+    if (!mergedById.has(msg.id) && msg.isStreaming) {
+      mergedById.set(msg.id, msg);
+    }
+  }
+
+  return Array.from(mergedById.values()).sort(
+    (a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)
+  );
+}
+
+function findLatestStreamingAssistantId(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant' && m.isStreaming) return m.id;
+  }
+  return null;
+}
+
 export default function App() {
   const [bootComplete, setBootComplete] = useState(false);
   const [sessionId] = useState(() => generateSessionId());
@@ -78,6 +106,7 @@ export default function App() {
   const [currentModel, setCurrentModel] = useState<ModelInfo | undefined>();
   const streamingIdRef = useRef<string | null>(null);
   const skippedHeartbeatRef = useRef<boolean>(false);
+  const hasHydratedHistoryRef = useRef<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleMessage = useCallback((msg: WSMessage) => {
@@ -262,7 +291,21 @@ export default function App() {
           });
         }
         
-        setMessages(loadedMessages);
+        setMessages(prev => {
+          let next: ChatMessage[];
+          if (!hasHydratedHistoryRef.current || prev.length === 0) {
+            hasHydratedHistoryRef.current = true;
+            next = loadedMessages;
+          } else {
+            hasHydratedHistoryRef.current = true;
+            next = mergeHistoryMessages(prev, loadedMessages);
+          }
+
+          // Rebind stream target after hydration/merge to avoid stale refs.
+          streamingIdRef.current = findLatestStreamingAssistantId(next);
+          setIsProcessing(streamingIdRef.current !== null);
+          return next;
+        });
         break;
       }
 
@@ -560,9 +603,16 @@ export default function App() {
           finalText?: string;
           usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
         } | undefined;
-        const currentId = streamingIdRef.current;
+        let currentId = streamingIdRef.current;
         if (currentId) {
+          // Ensure current target is still a valid streaming assistant row.
           setMessages(prev => {
+            const activeExists = prev.some(m => m.id === currentId && m.role === 'assistant' && m.isStreaming);
+            if (!activeExists) {
+              currentId = findLatestStreamingAssistantId(prev);
+            }
+            if (!currentId) return prev;
+
             const targetMsg = prev.find(m => m.id === currentId);
             // Filter out heartbeat responses
             if (targetMsg && isHeartbeatMessage(targetMsg.content)) {
@@ -573,10 +623,20 @@ export default function App() {
                 ? (() => {
                     const finalText = doneData?.finalText?.trim();
                     const currentContent = Array.isArray(m.content) ? m.content : [];
-                    const withoutText = currentContent.filter(part => part.type !== 'text');
-                    const mergedContent = finalText
-                      ? [{ type: 'text' as const, content: finalText }, ...withoutText]
-                      : currentContent;
+                    let mergedContent = currentContent;
+
+                    if (finalText) {
+                      const firstTextIdx = currentContent.findIndex(part => part.type === 'text');
+                      if (firstTextIdx >= 0) {
+                        // Preserve block order; only replace finalized text content in-place.
+                        mergedContent = currentContent.map((part, idx) =>
+                          idx === firstTextIdx ? { type: 'text' as const, content: finalText } : part
+                        );
+                      } else {
+                        // No prior text block (e.g. tool-only streaming) — append finalized prose at the end.
+                        mergedContent = [...currentContent, { type: 'text' as const, content: finalText }];
+                      }
+                    }
 
                     return {
                       ...m,
@@ -589,8 +649,48 @@ export default function App() {
             );
           });
           streamingIdRef.current = null;
+        } else {
+          // Ref lost (e.g. reconnect/history race): try to finalize the latest streaming row anyway.
+          setMessages(prev => {
+            const fallbackId = findLatestStreamingAssistantId(prev);
+            if (!fallbackId) return prev;
+            const targetMsg = prev.find(m => m.id === fallbackId);
+            if (targetMsg && isHeartbeatMessage(targetMsg.content)) {
+              return prev.filter(m => m.id !== fallbackId);
+            }
+            return prev.map(m =>
+              m.id === fallbackId
+                ? (() => {
+                    const finalText = doneData?.finalText?.trim();
+                    const currentContent = Array.isArray(m.content) ? m.content : [];
+                    let mergedContent = currentContent;
+
+                    if (finalText) {
+                      const firstTextIdx = currentContent.findIndex(part => part.type === 'text');
+                      if (firstTextIdx >= 0) {
+                        // Preserve block order; only replace finalized text content in-place.
+                        mergedContent = currentContent.map((part, idx) =>
+                          idx === firstTextIdx ? { type: 'text' as const, content: finalText } : part
+                        );
+                      } else {
+                        // No prior text block (e.g. tool-only streaming) — append finalized prose at the end.
+                        mergedContent = [...currentContent, { type: 'text' as const, content: finalText }];
+                      }
+                    }
+
+                    return {
+                      ...m,
+                      content: mergedContent,
+                      isStreaming: false,
+                      tokenUsage: normalizeTokenUsage(doneData?.usage),
+                    };
+                  })()
+                : m
+            );
+          });
         }
         // Reset heartbeat skip flag after processing done
+        streamingIdRef.current = null;
         skippedHeartbeatRef.current = false;
         break;
       }
@@ -598,6 +698,8 @@ export default function App() {
       case 'error': {
         const errorMsg = (msg.data as { message: string }).message;
         setIsProcessing(false);
+        streamingIdRef.current = null;
+        skippedHeartbeatRef.current = false;
         setMessages(prev => [...prev, {
           id: `sys-${Date.now()}`,
           role: 'system',
@@ -681,6 +783,10 @@ export default function App() {
       send({ type: 'get_history', limit: 100 });
       send({ type: 'get_models' });
     },
+    onDisconnect: () => {
+      setIsProcessing(false);
+      streamingIdRef.current = null;
+    },
   });
 
 
@@ -690,6 +796,7 @@ export default function App() {
 
     if (text === '/clear') {
       setMessages([]);
+      hasHydratedHistoryRef.current = false;
       return;
     }
 
@@ -698,6 +805,7 @@ export default function App() {
       setMessages([]);
       streamingIdRef.current = null;
       skippedHeartbeatRef.current = false;
+      hasHydratedHistoryRef.current = false;
       setIsProcessing(false);
       return;
     }
@@ -705,24 +813,26 @@ export default function App() {
     const userMsgId = `usr-${Date.now()}`;
     const aiMsgId = `ai-${Date.now()}-stream`;
 
-    setMessages(prev => [...prev, {
-      id: userMsgId,
-      role: 'user',
-      content: text,
-      images: images?.map((img) => img.dataUrl),
-      timestamp: Date.now()
-    }]);
-
-    setMessages(prev => [...prev, {
-      id: aiMsgId,
-      role: 'assistant',
-      content: [],
-      isStreaming: true,
-      timestamp: Date.now()
-    }]);
-
     streamingIdRef.current = aiMsgId;
     setIsProcessing(true);
+
+    // Atomic insert avoids race windows where deltas can arrive between separate updates.
+    setMessages(prev => [...prev,
+      {
+        id: userMsgId,
+        role: 'user',
+        content: text,
+        images: images?.map((img) => img.dataUrl),
+        timestamp: Date.now()
+      },
+      {
+        id: aiMsgId,
+        role: 'assistant',
+        content: [],
+        isStreaming: true,
+        timestamp: Date.now()
+      }
+    ]);
 
     if (text.startsWith('/')) {
       const parts = text.slice(1).split(' ');
@@ -827,6 +937,7 @@ export default function App() {
             send({ type: 'command', command: 'new', args: [] });
             setMessages([]);
             streamingIdRef.current = null;
+            hasHydratedHistoryRef.current = false;
           }}
           onSwitchModel={handleSwitchModel}
           models={models}
