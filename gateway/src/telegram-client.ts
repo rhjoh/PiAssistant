@@ -1,7 +1,8 @@
 import type { Context } from "grammy";
 import type { TelegramBot } from "./telegram.js";
 import type { Client, WSServerMessage } from "./types-ws.js";
-import { escapeHtml, markdownToTelegramHtml } from "./telegram.js";
+import { config } from "./config.js";
+import { escapeHtml } from "./telegram.js";
 
 /**
  * TelegramClient adapts TelegramBot to the Client interface for BroadcastManager.
@@ -19,7 +20,10 @@ export class TelegramClient implements Client {
   private pendingEdit: NodeJS.Timeout | null = null;
   private currentContext: Context | null = null;
   private accumulatedText = "";
+  private draftId: number | null = null;
+  private useDraftStreaming = false;
   private readonly EDIT_THROTTLE_MS = 1000;
+  private readonly DRAFT_START_MIN_CHARS = 24;
 
   constructor(private bot: TelegramBot) {}
 
@@ -33,6 +37,11 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
+    this.draftId = this.bot.getMessageDraftId(ctx);
+    this.useDraftStreaming =
+      config.telegram.useMessageDraftStreaming &&
+      this.bot.canUseMessageDraft(ctx) &&
+      this.draftId !== null;
     if (this.pendingEdit) {
       clearTimeout(this.pendingEdit);
       this.pendingEdit = null;
@@ -47,6 +56,8 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
+    this.draftId = null;
+    this.useDraftStreaming = false;
     if (this.pendingEdit) {
       clearTimeout(this.pendingEdit);
       this.pendingEdit = null;
@@ -106,35 +117,51 @@ export class TelegramClient implements Client {
     // BroadcastManager sends delta chunks, so accumulate locally for Telegram edits.
     this.accumulatedText += content;
 
-    // First text - send initial message
-    if (this.responseMessageId === null) {
-      try {
-        const initial = this.accumulatedText;
-        const msg = await ctx.reply(initial);
-        this.responseMessageId = msg.message_id;
-        this.lastEditedText = initial;
-        this.lastEditTime = Date.now();
-      } catch (err) {
-        console.error("[TelegramClient] Failed to send initial message:", err);
-      }
-      return;
-    }
-
-    // Throttled edit
-    const now = Date.now();
-    const timeSinceLastEdit = now - this.lastEditTime;
-
-    if (this.pendingEdit) {
-      clearTimeout(this.pendingEdit);
-      this.pendingEdit = null;
-    }
-
     const doEdit = async () => {
-      if (!this.currentContext || this.responseMessageId === null) return;
-
       const fullText = this.accumulatedText;
       if (fullText === this.lastEditedText) return;
       const textToSend = fullText.length > 4000 ? fullText.slice(0, 4000) + "…" : fullText;
+
+      if (!this.currentContext) return;
+
+      if (this.useDraftStreaming && this.draftId !== null && this.responseMessageId === null) {
+        const visibleLength = textToSend.trim().length;
+        if (visibleLength < this.DRAFT_START_MIN_CHARS) {
+          // Skip draft for very short early output to avoid duplicate flash on completion.
+          return;
+        }
+
+        try {
+          await this.bot.sendMessageDraft(ctx, this.draftId, textToSend);
+          this.lastEditedText = fullText;
+          this.lastEditTime = Date.now();
+          return;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const errObj = err as { parameters?: { retry_after?: number } };
+          if (errObj.parameters?.retry_after) {
+            const retryMs = errObj.parameters.retry_after * 1000 + 100;
+            setTimeout(doEdit, retryMs);
+            return;
+          }
+
+          // Fallback to editMessageText streaming if drafts are unsupported in this chat/bot config.
+          this.useDraftStreaming = false;
+          console.warn(`[TelegramClient] sendMessageDraft unavailable, falling back to editMessageText: ${errMsg}`);
+        }
+      }
+
+      if (this.responseMessageId === null) {
+        try {
+          const msg = await ctx.reply(textToSend);
+          this.responseMessageId = msg.message_id;
+          this.lastEditedText = fullText;
+          this.lastEditTime = Date.now();
+        } catch (err) {
+          console.error("[TelegramClient] Failed to send initial message:", err);
+        }
+        return;
+      }
 
       try {
         await ctx.api.editMessageText(
@@ -159,10 +186,22 @@ export class TelegramClient implements Client {
       }
     };
 
+    // Throttle without resetting timers on every incoming token.
+    // This guarantees periodic flushes during fast streams.
+    if (this.pendingEdit) {
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastEdit = now - this.lastEditTime;
+
     if (timeSinceLastEdit >= this.EDIT_THROTTLE_MS) {
       await doEdit();
     } else {
-      this.pendingEdit = setTimeout(doEdit, this.EDIT_THROTTLE_MS - timeSinceLastEdit);
+      this.pendingEdit = setTimeout(() => {
+        this.pendingEdit = null;
+        void doEdit();
+      }, this.EDIT_THROTTLE_MS - timeSinceLastEdit);
     }
   }
 
@@ -184,6 +223,13 @@ export class TelegramClient implements Client {
 
     // Final authoritative text from BroadcastManager/Pi
     this.accumulatedText = finalText || this.accumulatedText;
+
+    if (this.useDraftStreaming && this.responseMessageId === null && this.accumulatedText) {
+      // Finalize by sending a regular message; Telegram clears drafts once a non-draft message is sent.
+      await this.bot.replyLong(ctx, this.accumulatedText);
+      this.clearContext();
+      return;
+    }
 
     if (this.responseMessageId !== null && this.accumulatedText && this.accumulatedText !== this.lastEditedText) {
       try {

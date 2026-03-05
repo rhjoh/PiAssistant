@@ -1,4 +1,5 @@
-import { Bot, Context } from "grammy";
+import type { Context } from "grammy";
+import { Bot } from "grammy";
 import { config } from "./config.js";
 
 /**
@@ -322,13 +323,16 @@ export class TelegramBot {
   /**
    * Sends a message to the allowed user with HTML formatting.
    */
-  async sendMessage(text: string): Promise<void> {
-    if (!config.telegram.allowedUserId) {
-      console.warn("[Telegram] No allowed user ID configured, cannot send message");
-      return;
-    }
-    await this.bot.api.sendMessage(config.telegram.allowedUserId, text, { parse_mode: "HTML" });
-  }
+
+  // Causes duplicate messages when combined with sendMessageDraft() -- not sure of the draft/edit logic here.
+
+  // async sendMessage(text: string): Promise<void> {
+  //   if (!config.telegram.allowedUserId) {
+  //     console.warn("[Telegram] No allowed user ID configured, cannot send message");
+  //     return;
+  //   }
+  //   await this.bot.api.sendMessage(config.telegram.allowedUserId, text, { parse_mode: "HTML" });
+  // }
 
   /**
    * Sends formatted tool output to Telegram with HTML formatting.
@@ -384,6 +388,40 @@ export class TelegramBot {
   async replyToolOutput(ctx: Context, toolName: string, result: unknown): Promise<void> {
     const html = formatToolOutput(toolName, result);
     await ctx.reply(html, { parse_mode: "HTML" });
+  }
+
+  /**
+   * Returns whether this context can use sendMessageDraft.
+   * Telegram only supports drafts in private chats.
+   */
+  canUseMessageDraft(ctx: Context): boolean {
+    return ctx.chat?.type === "private" && typeof ctx.chat.id === "number" && ctx.chat.id > 0;
+  }
+
+  /**
+   * Derive a stable draft id for this turn from update_id.
+   */
+  getMessageDraftId(ctx: Context): number | null {
+    const update = ctx.update as { update_id?: number };
+    if (typeof update.update_id !== "number" || update.update_id <= 0) {
+      return null;
+    }
+    return update.update_id;
+  }
+
+  /**
+   * Stream/update a draft message for in-progress generation.
+   */
+  async sendMessageDraft(ctx: Context, draftId: number, text: string): Promise<void> {
+    if (!this.canUseMessageDraft(ctx)) {
+      throw new Error("sendMessageDraft is only supported in private chats");
+    }
+    const chatId = ctx.chat?.id;
+    if (typeof chatId !== "number") {
+      throw new Error("Invalid chat_id for sendMessageDraft");
+    }
+
+    await ctx.api.sendMessageDraft(chatId, draftId, text);
   }
 
   /**
