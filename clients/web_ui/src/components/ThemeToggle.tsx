@@ -1,29 +1,32 @@
 import { useTheme } from '@/hooks/useTheme';
 
+const THEME_LABELS: Record<string, string> = {
+  ops: 'OPS',
+  saas: 'SaaS',
+  llama: 'Llama',
+};
+
 export function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
-  const isOps = theme === 'ops';
+  const { theme, cycleTheme } = useTheme();
 
   return (
     <button
-      onClick={toggleTheme}
-      title={isOps ? 'Switch to Light theme' : 'Switch to Ops theme'}
+      onClick={cycleTheme}
+      title={`Switch theme (current: ${THEME_LABELS[theme]})`}
       style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        width: isOps ? 'auto' : '32px',
-        height: isOps ? '28px' : '32px',
-        padding: isOps ? '4px 10px' : '0',
-        background: isOps ? 'transparent' : 'transparent',
-        border: isOps ? '1px solid var(--border-color-strong)' : '1px solid var(--border-color)',
+        height: '28px',
+        padding: '4px 10px',
+        background: 'transparent',
+        border: '1px solid var(--border-color-strong)',
         borderRadius: 'var(--radius-md)',
         color: 'var(--text-secondary)',
         fontFamily: 'var(--font-primary)',
-        fontSize: isOps ? '10px' : '12px',
-        fontWeight: isOps ? 400 : 500,
-        letterSpacing: isOps ? '0.1em' : '0',
-        textTransform: isOps ? 'uppercase' : 'none',
+        fontSize: '10px',
+        fontWeight: 500,
+        letterSpacing: '0.05em',
         cursor: 'pointer',
         transition: 'all var(--transition-fast)',
       }}
@@ -32,21 +35,14 @@ export function ThemeToggle() {
         e.currentTarget.style.color = 'var(--accent-primary)';
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = isOps ? 'var(--border-color-strong)' : 'var(--border-color)';
+        e.currentTarget.style.borderColor = 'var(--border-color-strong)';
         e.currentTarget.style.color = 'var(--text-secondary)';
       }}
     >
-      {isOps ? (
-        <>
-          <span style={{ fontSize: '11px' }}>◈</span>
-          <span style={{ marginLeft: '4px' }}>OPS</span>
-        </>
-      ) : (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="5"/>
-          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-        </svg>
+      {theme === 'llama' && (
+        <span style={{ fontSize: '11px', marginRight: '4px' }}>🦙</span>
       )}
+      <span>{THEME_LABELS[theme]}</span>
     </button>
   );
 }

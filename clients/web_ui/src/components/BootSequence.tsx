@@ -17,6 +17,13 @@ const SAAS_BOOT_LINES = [
   'Ready.',
 ];
 
+const LLAMA_BOOT_LINES = [
+  'Loading model weights...',
+  'Warming up tokenizer...',
+  'Initializing context window...',
+  'Ready.',
+];
+
 interface BootSequenceProps {
   onComplete: () => void;
 }
@@ -24,11 +31,12 @@ interface BootSequenceProps {
 export function BootSequence({ onComplete }: BootSequenceProps) {
   const { theme } = useTheme();
   const isOps = theme === 'ops';
+  const isLlama = theme === 'llama';
   const [visibleLines, setVisibleLines] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
   const [fading, setFading] = useState(false);
 
-  const bootLines = isOps ? OPS_BOOT_LINES : SAAS_BOOT_LINES;
+  const bootLines = isOps ? OPS_BOOT_LINES : isLlama ? LLAMA_BOOT_LINES : SAAS_BOOT_LINES;
 
   useEffect(() => {
     let currentLine = 0;
@@ -47,7 +55,7 @@ export function BootSequence({ onComplete }: BootSequenceProps) {
     }, isOps ? 280 : 200);
 
     return () => clearInterval(interval);
-  }, [onComplete, bootLines, isOps]);
+  }, [onComplete, bootLines, isOps, isLlama]);
 
   return (
     <div 
@@ -71,6 +79,36 @@ export function BootSequence({ onComplete }: BootSequenceProps) {
             color: 'var(--text-secondary)'
           }}>
             CLEARANCE: LEVEL 5 // EYES ONLY
+          </div>
+        ) : isLlama ? (
+          <div style={{
+            marginBottom: '24px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px'
+          }}>
+            <div style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--accent-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontSize: '16px',
+              fontWeight: 700
+            }}>
+              π
+            </div>
+            <div style={{
+              fontSize: '18px',
+              fontWeight: 600,
+              color: 'var(--text-primary)',
+              fontFamily: 'var(--font-secondary)'
+            }}>
+              Pi Assistant
+            </div>
           </div>
         ) : (
           <div style={{
@@ -116,7 +154,7 @@ export function BootSequence({ onComplete }: BootSequenceProps) {
             >
               {isOps && (
                 <span style={{ color: 'var(--text-muted)' }}>&gt;</span>
-              )} {line}
+              )}{' '}{line}
             </div>
           ))}
         </div>
