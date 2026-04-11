@@ -20,6 +20,8 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private requestId = 0;
   private parseErrorCount = 0;
   private parseErrorSuppressed = false;
+  private activePromptSource: "user" | "internal" | null = null;
+  private promptQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private sessionPath: string,
@@ -34,6 +36,14 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   get isRunning(): boolean {
     return this.process !== null && this.process.exitCode === null;
+  }
+
+  get promptSource(): "user" | "internal" | null {
+    return this.activePromptSource;
+  }
+
+  get isPromptActive(): boolean {
+    return this.activePromptSource !== null;
   }
 
   get pid(): number | null {
@@ -106,47 +116,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     }
   }
 
-  async prompt(message: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      if (!this.isRunning) {
-        reject(new Error("Pi RPC not running"));
-        return;
-      }
-
-      const id = `req-${++this.requestId}`;
-      this.currentText = "";
-
-      const cleanup = () => {
-        this.off("event", onEvent);
-        this.off("error", onError);
-      };
-
-      const onEvent = (event: PiEvent) => {
-        if (event.type === "message_update") {
-          if (event.assistantMessageEvent.type === "text_delta") {
-            this.currentText += event.assistantMessageEvent.delta;
-            this.emit("text", this.currentText);
-          } else if (event.assistantMessageEvent.type === "text_done") {
-            // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
-            this.currentText = event.assistantMessageEvent.text;
-            this.emit("text", this.currentText);
-          }
-        } else if (event.type === "agent_end") {
-          cleanup();
-          resolve(this.currentText);
-        }
-      };
-
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-
-      this.on("event", onEvent);
-      this.on("error", onError);
-
-      this.send({ type: "prompt", message, id });
-    });
+  async prompt(
+    message: string,
+    options?: { source?: "user" | "internal" }
+  ): Promise<string> {
+    return this.enqueuePrompt(() =>
+      this.runPrompt({ type: "prompt", message, id: `req-${++this.requestId}` }, options?.source ?? "user")
+    );
   }
 
   /**
@@ -155,70 +131,39 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
    */
   async promptWithImages(
     message: string,
-    images: { data: string; mimeType: string }[]
+    images: { data: string; mimeType: string }[],
+    options?: { source?: "user" | "internal" }
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      if (!this.isRunning) {
-        reject(new Error("Pi RPC not running"));
-        return;
-      }
+    const id = `req-${++this.requestId}`;
 
-      const id = `req-${++this.requestId}`;
-      this.currentText = "";
+    // Format images for Pi RPC protocol
+    const imageContents = images.map((img) => ({
+      type: "image" as const,
+      data: img.data,
+      mimeType: img.mimeType,
+    }));
 
-      const cleanup = () => {
-        this.off("event", onEvent);
-        this.off("error", onError);
-      };
+    // Log the full JSON being sent (first 500 chars to avoid huge logs)
+    const payload = {
+      type: "prompt",
+      message,
+      images: imageContents.map((img) => ({ ...img, data: img.data.substring(0, 100) + "..." })),
+      id,
+    };
+    console.log(`[Pi RPC] Sending prompt with ${images.length} image(s):`);
+    console.log(`[Pi RPC] Payload preview:`, JSON.stringify(payload).substring(0, 500));
 
-      const onEvent = (event: PiEvent) => {
-        if (event.type === "message_update") {
-          if (event.assistantMessageEvent.type === "text_delta") {
-            this.currentText += event.assistantMessageEvent.delta;
-            this.emit("text", this.currentText);
-          } else if (event.assistantMessageEvent.type === "text_done") {
-            // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
-            this.currentText = event.assistantMessageEvent.text;
-            this.emit("text", this.currentText);
-          }
-        } else if (event.type === "agent_end") {
-          cleanup();
-          resolve(this.currentText);
-        }
-      };
-
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-
-      this.on("event", onEvent);
-      this.on("error", onError);
-
-      // Format images for Pi RPC protocol
-      const imageContents = images.map((img) => ({
-        type: "image" as const,
-        data: img.data,
-        mimeType: img.mimeType,
-      }));
-
-      // Log the full JSON being sent (first 500 chars to avoid huge logs)
-      const payload = {
-        type: "prompt",
-        message,
-        images: imageContents.map(img => ({ ...img, data: img.data.substring(0, 100) + "..." })),
-        id,
-      };
-      console.log(`[Pi RPC] Sending prompt with ${images.length} image(s):`);
-      console.log(`[Pi RPC] Payload preview:`, JSON.stringify(payload).substring(0, 500));
-
-      this.send({
-        type: "prompt",
-        message,
-        images: imageContents,
-        id,
-      });
-    });
+    return this.enqueuePrompt(() =>
+      this.runPrompt(
+        {
+          type: "prompt",
+          message,
+          images: imageContents,
+          id,
+        },
+        options?.source ?? "user"
+      )
+    );
   }
 
   async getState(): Promise<PiResponse> {
@@ -291,6 +236,140 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   abort(): void {
     this.send({ type: "abort" });
+  }
+
+  private enqueuePrompt(task: () => Promise<string>): Promise<string> {
+    const run = this.promptQueue.then(task, task);
+    this.promptQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private runPrompt(
+    command: Extract<PiCommand, { type: "prompt" }>,
+    source: "user" | "internal"
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (!this.isRunning) {
+        reject(new Error("Pi RPC not running"));
+        return;
+      }
+
+      this.currentText = "";
+      this.activePromptSource = source;
+      const promptId = command.id ?? `prompt-${Date.now()}`;
+      const promptPreview = this.previewText(command.message);
+
+      console.log(
+        `[Pi RPC] Prompt start (${source}) id=${promptId} text="${promptPreview}" queueActive=${this.isPromptActive}`
+      );
+
+      const cleanup = () => {
+        this.off("event", onEvent);
+        this.off("error", onError);
+        this.activePromptSource = null;
+      };
+
+      const onEvent = (event: PiEvent) => {
+        if (event.type === "message_update") {
+          if (event.assistantMessageEvent.type === "text_delta") {
+            this.currentText += event.assistantMessageEvent.delta;
+            console.log(
+              `[Pi RPC] Event text_delta (${source}) id=${promptId} delta=${event.assistantMessageEvent.delta.length} total=${this.currentText.length}`
+            );
+            this.emit("text", this.currentText);
+          } else if (event.assistantMessageEvent.type === "text_done") {
+            // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
+            this.currentText = event.assistantMessageEvent.text;
+            console.log(
+              `[Pi RPC] Event text_done (${source}) id=${promptId} total=${this.currentText.length} preview="${this.previewText(this.currentText)}"`
+            );
+            this.emit("text", this.currentText);
+          } else if (event.assistantMessageEvent.type === "thinking_delta") {
+            console.log(
+              `[Pi RPC] Event thinking_delta (${source}) id=${promptId} delta=${event.assistantMessageEvent.delta.length}`
+            );
+          } else if (event.assistantMessageEvent.type === "thinking_done") {
+            console.log(`[Pi RPC] Event thinking_done (${source}) id=${promptId}`);
+          }
+        } else if (event.type === "tool_execution_start") {
+          console.log(
+            `[Pi RPC] Event tool_execution_start (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId}`
+          );
+        } else if (event.type === "tool_execution_update") {
+          const partialLength = this.previewUnknown(event.partialResult).length;
+          console.log(
+            `[Pi RPC] Event tool_execution_update (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} previewChars=${partialLength}`
+          );
+        } else if (event.type === "tool_execution_end") {
+          console.log(
+            `[Pi RPC] Event tool_execution_end (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} isError=${event.isError} resultPreview="${this.previewUnknown(event.result)}"`
+          );
+        } else if (event.type === "agent_end") {
+          const finalText = this.currentText;
+          const usage = this.extractUsageSummary(event);
+          console.log(
+            `[Pi RPC] Event agent_end (${source}) id=${promptId} finalLen=${finalText.length} usage=${usage} preview="${this.previewText(finalText)}"`
+          );
+          cleanup();
+          resolve(finalText);
+        } else if (event.type === "response") {
+          console.log(
+            `[Pi RPC] Event response (${source}) id=${promptId} command=${event.command} success=${event.success}`
+          );
+        } else if (event.type === "auto_compaction_start") {
+          console.log(`[Pi RPC] Event auto_compaction_start reason=${event.reason}`);
+        } else if (event.type === "auto_compaction_end") {
+          console.log(
+            `[Pi RPC] Event auto_compaction_end aborted=${event.aborted} willRetry=${event.willRetry} tokensBefore=${event.result?.tokensBefore ?? "n/a"}`
+          );
+        }
+      };
+
+      const onError = (err: Error) => {
+        console.error(`[Pi RPC] Prompt error (${source}) id=${promptId}:`, err);
+        cleanup();
+        reject(err);
+      };
+
+      this.on("event", onEvent);
+      this.on("error", onError);
+
+      this.send(command);
+    });
+  }
+
+  private previewText(text: string, max = 120): string {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length <= max) return normalized;
+    return `${normalized.slice(0, max)}...`;
+  }
+
+  private previewUnknown(value: unknown, max = 120): string {
+    if (typeof value === "string") return this.previewText(value, max);
+    if (value === null || value === undefined) return String(value);
+    try {
+      return this.previewText(JSON.stringify(value), max);
+    } catch {
+      return "[unserializable]";
+    }
+  }
+
+  private extractUsageSummary(event: Extract<PiEvent, { type: "agent_end" }>): string {
+    const lastAssistant = [...(event.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    const usage = lastAssistant?.usage;
+    if (!usage) return "none";
+
+    const input = usage.input ?? 0;
+    const output = usage.output ?? 0;
+    const cacheRead = usage.cacheRead ?? 0;
+    const cacheWrite = usage.cacheWrite ?? 0;
+    const total = input + output + cacheRead + cacheWrite;
+    return `in=${input} out=${output} cacheRead=${cacheRead} cacheWrite=${cacheWrite} total=${total}`;
   }
 
   private handleLine(line: string): void {

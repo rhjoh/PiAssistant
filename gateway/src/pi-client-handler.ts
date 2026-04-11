@@ -246,6 +246,7 @@ export class PiClientHandler {
   private setupPiListeners(): void {
     this.pi.on("event", (event: PiEvent) => {
       if (this.clients.size === 0) return;
+      if (this.pi.promptSource !== "user") return;
 
       switch (event.type) {
         case "message_update": {

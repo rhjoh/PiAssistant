@@ -12,6 +12,8 @@ export interface HeartbeatOptions {
   heartbeatFile?: string;
   onTick?: () => void;
   isBusy?: () => boolean;
+  quietWindowMs?: number;
+  hasRecentUserActivity?: (windowMs: number) => boolean;
 }
 
 export class Heartbeat {
@@ -20,6 +22,8 @@ export class Heartbeat {
   private heartbeatFile: string;
   private onTick?: () => void;
   private isBusy?: () => boolean;
+  private quietWindowMs: number;
+  private hasRecentUserActivity?: (windowMs: number) => boolean;
 
   constructor(
     private pi: PiRpcClient,
@@ -31,6 +35,8 @@ export class Heartbeat {
     this.heartbeatFile = options.heartbeatFile ?? "prompts/heartbeat.md";
     this.onTick = options.onTick;
     this.isBusy = options.isBusy;
+    this.quietWindowMs = options.quietWindowMs ?? this.intervalMs;
+    this.hasRecentUserActivity = options.hasRecentUserActivity;
   }
 
   start(): void {
@@ -62,6 +68,12 @@ export class Heartbeat {
       console.log("[Heartbeat] Skipping - user prompt in progress");
       return;
     }
+    if (this.hasRecentUserActivity?.(this.quietWindowMs)) {
+      console.log(
+        `[Heartbeat] Skipping - user activity within quiet window (${Math.round(this.quietWindowMs / 60000)} min)`
+      );
+      return;
+    }
 
     const now = new Date();
     const timeStr = now.toLocaleString("en-AU", {
@@ -88,7 +100,7 @@ export class Heartbeat {
     this.onTick?.();
 
     try {
-      const response = await this.pi.prompt(prompt);
+      const response = await this.pi.prompt(prompt, { source: "internal" });
       // Strip backticks - agent sometimes wraps the marker in code formatting
       const trimmed = response.trim().replace(/^`+|`+$/g, "");
 

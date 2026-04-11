@@ -202,6 +202,7 @@ function MessageRow({ msg }: MessageRowProps) {
         ) : (
           <AssistantContent
             content={msg.content}
+            isStreaming={Boolean(msg.isStreaming)}
             expandedThinking={expandedThinking}
             onToggleThinking={toggleThinking}
             tokenUsage={msg.tokenUsage}
@@ -330,18 +331,20 @@ function SystemContent({ content }: { content: string }) {
 
 interface AssistantContentProps {
   content: string | MessageContent[];
+  isStreaming: boolean;
   expandedThinking: Set<number>;
   onToggleThinking: (idx: number) => void;
   tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
 }
 
-function AssistantContent({ content, expandedThinking, onToggleThinking, tokenUsage }: AssistantContentProps) {
+function AssistantContent({ content, isStreaming, expandedThinking, onToggleThinking, tokenUsage }: AssistantContentProps) {
   const { theme } = useTheme();
   const isOps = theme === 'ops';
 
   const contents = typeof content === 'string'
     ? [{ type: 'text' as const, content }]
     : (Array.isArray(content) ? content : []);
+  const showWaitingIndicator = isStreaming && contents.length === 0;
 
   return (
     <div style={{ 
@@ -350,6 +353,7 @@ function AssistantContent({ content, expandedThinking, onToggleThinking, tokenUs
       color: isOps ? 'var(--ai-text)' : 'var(--text-primary)',
       fontFamily: 'var(--font-secondary)'
     }}>
+      {showWaitingIndicator && <ThinkingIndicator />}
       {contents.map((part, idx) => {
         switch (part.type) {
           case 'text':
@@ -409,6 +413,52 @@ function AssistantContent({ content, expandedThinking, onToggleThinking, tokenUs
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  const { theme } = useTheme();
+  const isOps = theme === 'ops';
+  const [dotCount, setDotCount] = useState(1);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setDotCount((prev) => (prev >= 3 ? 1 : prev + 1));
+    }, 320);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const dots = '.'.repeat(dotCount);
+
+  return (
+    <div
+      aria-live="polite"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'baseline',
+        gap: '0',
+        margin: '6px 0 10px',
+        padding: isOps ? '8px 12px' : '6px 0',
+        color: 'var(--text-secondary)',
+        fontFamily: 'var(--font-primary)',
+        fontSize: isOps ? '12px' : '14px',
+        letterSpacing: isOps ? '0.1em' : '0.01em',
+        textTransform: isOps ? 'uppercase' : 'none',
+      }}
+    >
+      <span>Thinking</span>
+      <span
+        style={{
+          display: 'inline-block',
+          width: '1.6em',
+          textAlign: 'left',
+          color: 'var(--accent-primary)',
+        }}
+      >
+        {dots}
+      </span>
     </div>
   );
 }
