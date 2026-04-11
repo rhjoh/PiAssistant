@@ -449,7 +449,7 @@ export class TelegramBot {
   /**
    * Split a long message into chunks and reply to the context.
    */
-  async replyLong(ctx: Context, text: string): Promise<void> {
+  async replyLong(ctx: Context, text: string, parseMode?: "HTML" | "Markdown" | "MarkdownV2"): Promise<void> {
     const maxLength = 4000;
     const chunks: string[] = [];
 
@@ -458,7 +458,11 @@ export class TelegramBot {
     }
 
     for (const chunk of chunks) {
-      await ctx.reply(chunk);
+      if (parseMode) {
+        await ctx.reply(chunk, { parse_mode: parseMode });
+      } else {
+        await ctx.reply(chunk);
+      }
     }
   }
 

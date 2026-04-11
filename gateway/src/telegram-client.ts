@@ -2,12 +2,16 @@ import type { Context } from "grammy";
 import type { TelegramBot } from "./telegram.js";
 import type { Client, WSServerMessage } from "./types-ws.js";
 import { config } from "./config.js";
-import { escapeHtml } from "./telegram.js";
+import { escapeHtml, markdownToTelegramHtml } from "./telegram.js";
+
+const TOOL_OUTPUT_MAX_CHARS = 1800;
+const TOOL_OUTPUT_MAX_LINES = 30;
 
 /**
  * TelegramClient adapts TelegramBot to the Client interface for BroadcastManager.
  * 
- * This allows Telegram to receive the same broadcasts as WebSocket clients.
+ * This allows Telegram to receive the same broadcasts as WebSocket clients,
+ * with Telegram-specific rendering (HTML formatting, tool output in <pre> blocks, etc.)
  */
 export class TelegramClient implements Client {
   id = "telegram";
@@ -25,6 +29,9 @@ export class TelegramClient implements Client {
   private readonly EDIT_THROTTLE_MS = 1000;
   private readonly DRAFT_START_MIN_CHARS = 24;
 
+  // Tool call tracking — map toolCallId → Telegram message ID
+  private toolMessages = new Map<string, { messageId: number | null; label: string; pending: boolean }>();
+
   constructor(private bot: TelegramBot) {}
 
   /**
@@ -37,6 +44,7 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
+    this.toolMessages.clear();
     this.draftId = this.bot.getMessageDraftId(ctx);
     this.useDraftStreaming =
       config.telegram.useMessageDraftStreaming &&
@@ -56,6 +64,7 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
+    this.toolMessages.clear();
     this.draftId = null;
     this.useDraftStreaming = false;
     if (this.pendingEdit) {
@@ -82,16 +91,15 @@ export class TelegramClient implements Client {
         break;
 
       case "tool_start":
-        await this.handleToolStart(ctx, message.data.label);
+        await this.handleToolStart(ctx, message.data.toolCallId, message.data.toolName, message.data.label);
         break;
 
       case "tool_output":
-        // Tool output is handled by updating the tool start message
-        // This is done by the prompt-handler currently
+        await this.handleToolOutput(ctx, message.data.toolCallId, message.data.output, message.data.truncated);
         break;
 
       case "tool_end":
-        // Tool completed
+        // Tool completed — message already updated by tool_output
         break;
 
       case "done":
@@ -113,8 +121,9 @@ export class TelegramClient implements Client {
     }
   }
 
+  // ── Text streaming ──────────────────────────────────────────────
+
   private async handleTextDelta(ctx: Context, content: string): Promise<void> {
-    // BroadcastManager sends delta chunks, so accumulate locally for Telegram edits.
     this.accumulatedText += content;
 
     const doEdit = async () => {
@@ -127,7 +136,6 @@ export class TelegramClient implements Client {
       if (this.useDraftStreaming && this.draftId !== null && this.responseMessageId === null) {
         const visibleLength = textToSend.trim().length;
         if (visibleLength < this.DRAFT_START_MIN_CHARS) {
-          // Skip draft for very short early output to avoid duplicate flash on completion.
           return;
         }
 
@@ -145,7 +153,7 @@ export class TelegramClient implements Client {
             return;
           }
 
-          // Fallback to editMessageText streaming if drafts are unsupported in this chat/bot config.
+          // Fallback to editMessageText streaming if drafts are unsupported.
           this.useDraftStreaming = false;
           console.warn(`[TelegramClient] sendMessageDraft unavailable, falling back to editMessageText: ${errMsg}`);
         }
@@ -187,7 +195,6 @@ export class TelegramClient implements Client {
     };
 
     // Throttle without resetting timers on every incoming token.
-    // This guarantees periodic flushes during fast streams.
     if (this.pendingEdit) {
       return;
     }
@@ -205,15 +212,54 @@ export class TelegramClient implements Client {
     }
   }
 
-  private async handleToolStart(ctx: Context, label: string): Promise<void> {
-    // Send tool start message (will be updated with output later)
+  // ── Tool call rendering ─────────────────────────────────────────
+
+  private async handleToolStart(ctx: Context, toolCallId: string, toolName: string, label: string): Promise<void> {
+    const entry = { messageId: null as number | null, label, pending: true };
+    this.toolMessages.set(toolCallId, entry);
+
     try {
       const html = `Running ${escapeHtml(label)}...`;
-      await ctx.reply(html, { parse_mode: "HTML" });
+      const msg = await ctx.reply(html, { parse_mode: "HTML" });
+      entry.messageId = msg.message_id;
+      entry.pending = false;
     } catch (err) {
       console.error("[TelegramClient] Failed to send tool start:", err);
+      entry.pending = false;
     }
   }
+
+  private async handleToolOutput(ctx: Context, toolCallId: string, output: string, truncated?: boolean): Promise<void> {
+    const entry = this.toolMessages.get(toolCallId);
+    if (!entry) return;
+
+    // If the tool start message hasn't been sent yet, wait briefly
+    if (!entry.messageId) {
+      if (entry.pending) {
+        setTimeout(() => void this.handleToolOutput(ctx, toolCallId, output, truncated), 200);
+        return;
+      }
+      return;
+    }
+
+    const truncatedOutput = this.truncateToolOutput(output);
+
+    const hasOutput = truncatedOutput.length > 0;
+    const html = hasOutput
+      ? `${escapeHtml(entry.label)}\n<pre>${escapeHtml(truncatedOutput)}</pre>`
+      : `${escapeHtml(entry.label)}`;
+
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, entry.messageId, html, { parse_mode: "HTML" });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (!errMsg.includes("message is not modified")) {
+        console.error("[TelegramClient] Failed to update tool message:", err);
+      }
+    }
+  }
+
+  // ── Final response ──────────────────────────────────────────────
 
   private async handleDone(ctx: Context, finalText: string): Promise<void> {
     if (this.pendingEdit) {
@@ -223,31 +269,28 @@ export class TelegramClient implements Client {
 
     // Final authoritative text from BroadcastManager/Pi
     this.accumulatedText = finalText || this.accumulatedText;
+    const text = this.accumulatedText;
 
-    if (this.useDraftStreaming && this.responseMessageId === null && this.accumulatedText) {
-      // Finalize by sending a regular message; Telegram clears drafts once a non-draft message is sent.
-      await this.bot.replyLong(ctx, this.accumulatedText);
+    if (this.useDraftStreaming && this.responseMessageId === null && text) {
+      // Finalize by sending a regular message with HTML formatting.
+      const html = markdownToTelegramHtml(text);
+      await this.bot.replyLong(ctx, html, "HTML");
       this.clearContext();
       return;
     }
 
-    if (this.responseMessageId !== null && this.accumulatedText && this.accumulatedText !== this.lastEditedText) {
+    if (this.responseMessageId !== null && text && text !== this.lastEditedText) {
+      // Edit the existing streaming message with HTML-formatted final text.
+      const html = markdownToTelegramHtml(text);
+
       try {
-        if (this.accumulatedText.length <= 4000) {
-          await ctx.api.editMessageText(
-            ctx.chat!.id,
-            this.responseMessageId,
-            this.accumulatedText
-          );
+        if (html.length <= 4000) {
+          await ctx.api.editMessageText(ctx.chat!.id, this.responseMessageId, html, { parse_mode: "HTML" });
         } else {
-          const firstChunk = this.accumulatedText.slice(0, 4000);
-          await ctx.api.editMessageText(
-            ctx.chat!.id,
-            this.responseMessageId,
-            firstChunk
-          );
+          const firstChunk = html.slice(0, 4000);
+          await ctx.api.editMessageText(ctx.chat!.id, this.responseMessageId, firstChunk, { parse_mode: "HTML" });
           // Send remainder as new messages
-          await this.bot.replyLong(ctx, this.accumulatedText.slice(4000));
+          await this.bot.replyLong(ctx, html.slice(4000), "HTML");
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -255,11 +298,35 @@ export class TelegramClient implements Client {
           console.error("[TelegramClient] Failed to edit final message:", err);
         }
       }
-    } else if (this.responseMessageId === null && finalText) {
-      // No streaming happened - send as new message
-      await this.bot.replyLong(ctx, finalText);
+    } else if (this.responseMessageId === null && text) {
+      // No streaming happened — send as new message with HTML formatting
+      const html = markdownToTelegramHtml(text);
+      await this.bot.replyLong(ctx, html, "HTML");
     }
 
     this.clearContext();
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────
+
+  private truncateToolOutput(text: string): string {
+    const normalized = text.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    let out = normalized;
+    const lines = normalized.split("\n");
+
+    if (lines.length > TOOL_OUTPUT_MAX_LINES) {
+      out = lines.slice(0, TOOL_OUTPUT_MAX_LINES).join("\n") + "\n… (truncated)";
+    }
+
+    if (out.length > TOOL_OUTPUT_MAX_CHARS) {
+      const truncated = out.slice(0, TOOL_OUTPUT_MAX_CHARS);
+      const lastNewline = truncated.lastIndexOf("\n");
+      const cutPoint = lastNewline > TOOL_OUTPUT_MAX_CHARS * 0.5 ? lastNewline : TOOL_OUTPUT_MAX_CHARS;
+      out = out.slice(0, cutPoint) + "\n… (truncated)";
+    }
+
+    return out;
   }
 }
