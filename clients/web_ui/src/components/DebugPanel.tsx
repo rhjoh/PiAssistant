@@ -52,8 +52,8 @@ export function DebugPanel({ messages }: DebugPanelProps) {
     <div
       style={{
         width: '420px',
-        borderLeft: '1px solid #141c24',
-        background: '#070809',
+        borderLeft: '1px solid var(--border-color)',
+        background: 'var(--bg-primary)',
         display: 'flex',
         flexDirection: 'column',
       }}
@@ -65,8 +65,8 @@ export function DebugPanel({ messages }: DebugPanelProps) {
           fontSize: '12px',
           letterSpacing: '0.12em',
           textTransform: 'uppercase',
-          color: '#4a5568',
-          fontFamily: "'IBM Plex Mono', monospace",
+          color: 'var(--text-muted)',
+          fontFamily: 'var(--font-primary)',
         }}
       >
         WS DEBUG // {messages.length} MSGS
@@ -98,8 +98,8 @@ export function DebugPanel({ messages }: DebugPanelProps) {
             key={i}
             style={{
               padding: '6px 14px',
-              borderBottom: '1px solid #0d0f12',
-              fontFamily: "'IBM Plex Mono', monospace",
+              borderBottom: '1px solid var(--border-color)',
+              fontFamily: 'var(--font-primary)',
             }}
           >
             <div
@@ -110,7 +110,7 @@ export function DebugPanel({ messages }: DebugPanelProps) {
                 marginBottom: '3px',
               }}
             >
-              <span style={{ fontSize: '11px', color: '#2d3748' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                 {formatTime(msg.timestamp)}
               </span>
               <span
@@ -130,7 +130,7 @@ export function DebugPanel({ messages }: DebugPanelProps) {
               <div
                 style={{
                   fontSize: '11px',
-                  color: '#4a5568',
+                  color: 'var(--text-secondary)',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',

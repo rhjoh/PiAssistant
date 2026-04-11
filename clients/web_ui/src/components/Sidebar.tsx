@@ -22,10 +22,12 @@ export function Sidebar({
   currentModel,
   disabled 
 }: SidebarProps) {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, cycleTheme, nextTheme } = useTheme();
   const [showModelMenu, setShowModelMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const isOps = theme === 'ops';
+  const isLlama = theme === 'llama';
+  const next = nextTheme();
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -265,8 +267,8 @@ export function Sidebar({
       >
         {/* Theme toggle */}
         <button
-          onClick={toggleTheme}
-          title={isOps ? 'Switch to SaaS theme' : 'Switch to Ops theme'}
+          onClick={cycleTheme}
+          title={`Switch to ${next === 'ops' ? 'Ops' : next === 'saas' ? 'SaaS' : 'Llama'} theme`}
           style={{
             width: '40px',
             height: '40px',
@@ -290,6 +292,7 @@ export function Sidebar({
           }}
         >
           {isOps ? (
+            /* Sun - switch to light */
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="5"></circle>
               <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -301,7 +304,13 @@ export function Sidebar({
               <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
               <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
             </svg>
+          ) : isLlama ? (
+            /* Flame/llama icon */
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2c.5 2.5-.5 5-2 7 1 0 2.5.5 3 2.5.5-2 1-3.5 2-4.5-.5 2.5.5 4.5 0 7a6 6 0 1 1-3-12z"></path>
+            </svg>
           ) : (
+            /* Moon - switch to dark */
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
             </svg>
