@@ -1,495 +1,362 @@
 # PiAssistant Architecture
 
-**Last Updated:** 2026-02-22
+**Last Updated:** 2026-04-06
 
 ## Overview
 
-PiAssistant is a personal AI assistant system with multi-client support. The Gateway owns a persistent Pi RPC session and broadcasts conversation state to all connected clients (Telegram, macOS native app, Pi TUI via bridge).
+PiAssistant is a local multi-client assistant platform. The gateway owns a persistent Pi RPC session and exposes that session to multiple clients simultaneously.
 
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│  Telegram   │  │   macOS     │  │  Pi TUI     │
-│   (Bot)     │  │   (Swift)   │  │  (Bridge)   │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-              ┌─────────┴──────────┐
-              │   Gateway (3456)   │  ← Node.js, owns Pi RPC
-              │  - WebSocket srv   │
-              │  - Broadcast mgr   │
-              │  - Telegram bot    │
-              │  - Memory watcher  │
-              │  - Heartbeat       │
-              └─────────┬──────────┘
-                        │
-              ┌─────────┴──────────┐
-              │   Pi RPC Agent     │  ← main.jsonl session
-              │   (glm-4.7 / etc)  │
-              └────────────────────┘
+```text
+Telegram + macOS app + Web UI + Pi TUI bridge
+                    ↓
+         Gateway (Node.js, localhost)
+      - Pi RPC owner
+      - WebSocket server (:3456)
+      - File/status server (:3457)
+      - Broadcast manager
+      - Telegram adapter
+      - Session manager
+      - Memory watcher
+      - Heartbeat
+                    ↓
+          Pi RPC session (main.jsonl)
 ```
 
 ## Core Principles
 
-1. **Gateway owns the session** - Pi RPC runs continuously, no handoff/lock complexity
-2. **Multi-client sync** - All clients see the same conversation simultaneously
-3. **Broadcast architecture** - Events flow: Pi → Gateway → BroadcastManager → All Clients
-4. **Self-improving** - Agent can modify its own codebase via tools
+1. Gateway owns the Pi session continuously.
+2. All clients observe the same conversation state.
+3. The session file is shared state; clients are just views/controllers.
+4. Broadcasted events are the integration contract for standard clients.
+5. Pi bridge mode exists so the TUI can participate without taking session ownership.
 
 ## Components
 
-### 1. Gateway (Node.js)
+### 1. Gateway
 
-**Location:** `gateway/src/`
+Location: `gateway/src/`
 
-The central hub. Owns the Pi RPC process, manages WebSocket connections, and coordinates all features.
+The gateway is the runtime hub. It starts Pi, owns the session, forwards prompts, broadcasts streaming events, and runs auxiliary services.
 
-**Key Modules:**
+Key modules:
 
 | File | Responsibility |
 |------|----------------|
-| `index.ts` | Entry point, service initialization, lifecycle |
-| `pi-rpc.ts` | Pi RPC client wrapper, event streaming |
-| `websocket-server.ts` | WebSocket server on port 3456, client routing |
-| `broadcast.ts` | BroadcastManager - distributes events to all clients |
-| `telegram-client.ts` | Telegram adapter for BroadcastManager |
-| `telegram.ts` | Telegram bot (grammY), command handlers |
-| `session-manager.ts` | Session archival, `/new` command, compaction events |
-| `memory-watcher.ts` | Background extraction to memory.md | 
-| `heartbeat.ts` | Periodic proactive prompts |
-| `image-storage.ts` | Base64 image persistence to disk |
-| `prompt-handler.ts` | Tool output formatting, response streaming |
+| `index.ts` | Bootstrap and service lifecycle |
+| `pi-rpc.ts` | Pi RPC process wrapper and event handling |
+| `websocket-server.ts` | Standard WebSocket server and `/pi-client` routing |
+| `pi-client-handler.ts` | Native protocol bridge for Pi TUI |
+| `broadcast.ts` | Multi-client distribution and prompt coordination |
+| `handlers/messages.ts` | Standard WS message routing |
+| `handlers/commands.ts` | Command handlers for WS clients |
+| `telegram.ts` | Telegram bot integration |
+| `telegram-client.ts` | Telegram adapter for broadcast layer |
+| `session-manager.ts` | `/new`, archive flow, compaction handling |
+| `memory-watcher.ts` | Background memory extraction |
+| `heartbeat.ts` | Periodic internal prompts |
+| `file-server.ts` | Local file serving and status endpoint |
+| `gateway-status.ts` | Runtime status snapshot provider |
+| `image-storage.ts` | Image persistence and history sanitization |
+| `cli/index.ts` | `personalos` process manager/status/logs CLI |
 
-**Startup Flow:**
-1. Load config from `.env`
-2. Initialize ImageStorage (ensures `~/assistant_main/images/` exists)
-3. Start Pi RPC process (continuous mode)
-4. Start WebSocket server (localhost:3456)
-5. Start Telegram bot (if configured)
-6. Start Memory Watcher (background LLM extraction)
-7. Start Heartbeat scheduler
+Startup flow:
 
-### 2. Pi RPC Process
+1. Load `.env` and validate config.
+2. Ensure runtime/session directories exist.
+3. Start Pi RPC.
+4. Start WebSocket server on `127.0.0.1:3456`.
+5. Start file/status server on `127.0.0.1:3457`.
+6. Start heartbeat and memory watcher.
+7. Start Telegram bot.
 
-**Invocation:** `pi --mode rpc --session ~/assistant_main/sessions/main.jsonl`
+### 2. Pi RPC
 
-The LLM agent process. Gateway spawns and owns this process. It loads the session file and maintains conversation state.
+Invocation pattern:
 
-**Communication:**
-- Gateway sends: `{"type": "prompt", "message": "..."}` or `{"type": "prompt_with_images", ...}`
-- Pi streams events: `text_delta`, `thinking_start`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `done`, `error`
+```bash
+pi --mode rpc --session ~/assistant_main/sessions/main.jsonl
+```
 
-**Session File:** `~/assistant_main/sessions/main.jsonl`
-- JSONL format, one entry per line
-- Contains messages, tool calls, tool results, model changes
-- Automatic compaction when context fills (triggers archival)
+The gateway starts Pi without forcing a model via CLI flags so Pi can restore model state from the session.
 
-### 3. WebSocket Protocol
+Key behaviors:
 
-**Endpoint:** `ws://localhost:3456`
+- prompts and image prompts go through RPC
+- model switching is done via `set_model`
+- thinking level can be set via RPC
+- compaction/session events are observed by the gateway
+- prompt source is tracked so internal turns can be filtered from user-facing broadcasts
 
-All non-Telegram clients connect here. The server routes by path:
-- `/` - Regular clients (macOS app)
-- `/pi-client` - Pi TUI via bridge extension
+### 3. Standard WebSocket API
 
-**Client → Gateway:**
+Endpoint:
+
+- `ws://127.0.0.1:3456/`
+
+Used by:
+
+- macOS client
+- Web UI
+- future standard clients
+
+Client → gateway messages:
+
 ```json
 { "type": "prompt", "message": "hello" }
 { "type": "prompt_with_images", "message": "describe this", "images": [...] }
 { "type": "abort" }
 { "type": "get_state" }
-{ "type": "slash_command", "command": "new" }
+{ "type": "get_history", "limit": 50 }
+{ "type": "get_models" }
+{ "type": "switch_model", "provider": "openai", "modelId": "gpt-5.4" }
+{ "type": "command", "command": "new", "args": [] }
 ```
 
-**Gateway → Client:**
+Gateway → client messages:
+
 ```json
-{ "type": "text_delta", "data": { "content": "Hello" } }
-{ "type": "thinking_start", "data": { "id": "..." } }
-{ "type": "thinking_delta", "data": { "id": "...", "content": "..." } }
+{ "type": "connection", "data": { "connected": true, "model": "...", "provider": "..." } }
+{ "type": "user_message", "data": { "content": "...", "source": "telegram" } }
+{ "type": "text_delta", "data": { "content": "..." } }
+{ "type": "thinking_delta", "data": { "content": "..." } }
+{ "type": "thinking_done", "data": { "content": "..." } }
 { "type": "tool_start", "data": { "toolCallId": "...", "toolName": "bash", "label": "$ ls" } }
 { "type": "tool_output", "data": { "toolCallId": "...", "output": "..." } }
-{ "type": "tool_end", "data": { "toolCallId": "..." } }
-{ "type": "image", "data": { "mimeType": "image/png", "data": "base64..." } }
-{ "type": "done", "data": { "finalText": "..." } }
-{ "type": "error", "data": { "message": "..." } }
+{ "type": "tool_end", "data": { "toolCallId": "...", "toolName": "bash" } }
+{ "type": "image", "data": { "source": "/abs/path/to/image.png", "alt": "..." } }
+{ "type": "done", "data": { "finalText": "...", "usage": { "...": 0 } } }
 { "type": "history", "data": { "messages": [...] } }
-{ "type": "clear" }
+{ "type": "models", "data": { "models": [...], "current": { "...": "..." } } }
+{ "type": "model_switched", "data": { "success": true, "model": { "...": "..." } } }
+{ "type": "state", "data": { "isProcessing": false, "model": "...", "provider": "..." } }
+{ "type": "proactive", "data": { "message": "..." } }
+{ "type": "error", "data": { "message": "..." } }
 ```
 
----
+Notes:
 
-## Endpoints
+- Standard clients receive session history on connect.
+- Images are served by path, not embedded base64, where possible.
+- Internal heartbeat/no-op traffic is filtered aggressively but is still an active area of cleanup.
 
-### WebSocket Endpoints
+### 4. Pi TUI Bridge
 
-| Endpoint | Path | Purpose | Client Type |
-|----------|------|---------|-------------|
-| `ws://localhost:3456/` | `/` | Standard client connection | macOS app |
-| `ws://localhost:3456/pi-client` | `/pi-client` | Pi TUI bridge connection | Pi TUI extension |
+Endpoints and files:
 
-**Connection Behavior:**
-- Server binds to `localhost:3456` only (security)
-- Supports multiple simultaneous connections
-- Each connection receives full broadcast stream
-- On connect: Server sends session history via `history` message
+- Gateway endpoint: `ws://127.0.0.1:3456/pi-client`
+- Repo copy: `clients/pi-extension/gateway-bridge.ts`
+- Active runtime copy: `~/.pi/agent/extensions/gateway-bridge.ts`
 
-### Message Types (Client → Gateway)
+The bridge registers a custom provider so the Pi TUI can act as another client while the gateway still owns the underlying session.
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `prompt` | `{ message: string }` | Send text message to agent |
-| `prompt_with_images` | `{ message: string, images: ImageAttachment[] }` | Send message with images |
-| `abort` | `{}` | Abort current agent turn |
-| `get_state` | `{}` | Request current session state |
-| `slash_command` | `{ command: string }` | Execute command (`new`, `model`, etc.) |
+High-level flow:
 
-**ImageAttachment:**
-```typescript
-{
-  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp",
-  data: "base64...",  // base64 encoded image data
-  name?: string       // optional filename
-}
-```
+1. TUI connects to `/pi-client`.
+2. User prompt is forwarded to gateway.
+3. Gateway runs the real Pi RPC turn.
+4. Bridge translates gateway-native events back into Pi-native stream events.
+5. TUI renders using its native event model.
 
-### Message Types (Gateway → Client)
+This area has been implemented and improved, but tool lifecycle fidelity on error/retry chains has historically been a fragile spot.
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `text_delta` | `{ content: string }` | Streaming text chunk |
-| `thinking_start` | `{ id: string }` | Thinking block started |
-| `thinking_delta` | `{ id: string, content: string }` | Thinking content update |
-| `thinking_end` | `{ id: string }` | Thinking block complete |
-| `tool_start` | `{ toolCallId: string, toolName: string, label: string }` | Tool execution started |
-| `tool_output` | `{ toolCallId: string, output: string }` | Tool output chunk |
-| `tool_end` | `{ toolCallId: string }` | Tool execution complete |
-| `image` | `{ mimeType: string, data: string }` | Image data (base64) |
-| `done` | `{ finalText: string }` | Turn complete, final text |
-| `error` | `{ message: string }` | Error occurred |
-| `history` | `{ messages: Message[] }` | Full session history on connect |
-| `clear` | `{}` | Clear conversation (after `/new`) |
+### 5. Telegram
 
-### Telegram Bot Commands
+Telegram is treated as another client via the broadcast layer.
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Show welcome message |
-| `/status` | Show gateway and Pi status |
-| `/model` | Show current model or list available |
-| `/model <n>` | Switch to model by number |
-| `/session` | Show session stats and context info |
-| `/new` | Archive session and start fresh |
+Current commands:
 
-**Note:** Telegram commands are registered via `bot.api.setMyCommands()` on startup.
+- `/status`
+- `/model`
+- `/model list`
+- `/model <n>`
+- `/session`
+- `/new`
+- `/takeover` returns a deprecation message because gateway ownership is the active model
 
-### Pi RPC Commands (Internal)
+Telegram remains first-class for messaging, but it does not impersonate other user-originated clients.
 
-Gateway → Pi RPC via stdin/stdout JSON protocol:
+### 6. Web UI
 
-| Command | Description |
-|---------|-------------|
-| `prompt` | Send user message, stream response |
-| `prompt_with_images` | Send message with image attachments |
-| `steer` | Send system steering message |
-| `abort` | Abort current generation |
-| `get_state` | Get current model, stats |
-| `get_session_stats` | Get cumulative token/cost stats |
-| `new_session` | Archive and start new session |
-| `set_model` | Change LLM model |
+Location: `clients/web_ui/`
 
-### File System Paths
+Implemented capabilities:
 
-| Path | Purpose | Config Var |
-|------|---------|------------|
-| `~/assistant_main/sessions/main.jsonl` | Active session file | `PI_SESSION_PATH` |
-| `~/assistant_main/sessions/archived/` | Archived sessions | - |
-| `~/assistant_main/images/` | Stored image files | - |
-| `~/assistant_main/memory.md` | Extracted memories | - |
-| `~/assistant_main/yesterday.md` | Recent context | - |
-| `gateway/prompts/memory-prompt.md` | Memory extraction prompt | - |
-| `gateway/prompts/heartbeat.md` | Heartbeat prompt template | - |
+- React + Vite + TypeScript app
+- auto-reconnecting WebSocket client
+- history hydration on connect
+- streaming text/thinking/tool rendering
+- debug panel
+- sticky auto-scroll
+- theme system
+- model list/switch UI
+- image upload/display
+- token display
 
-### 4. BroadcastManager
+The Web UI is no longer speculative or secondary documentation-wise; it is one of the main clients.
 
-**Location:** `gateway/src/broadcast.ts`
+### 7. macOS Client
 
-Central message distribution. All Pi events flow through here to reach all connected clients.
+Location: `clients/macos/ChatAssistant/`
 
-**Clients:**
-- `TelegramClient` - Sends to Telegram bot API
-- `WebSocketClient` - Sends to macOS app
-- `PiClientHandler` - Sends to Pi TUI bridge
+Implemented capabilities:
 
-**Features:**
-- Serializes Pi events to maintain order
-- Throttles Telegram edits (rate limit handling)
-- Formats tool output for display
-- Splits long responses for Telegram 4096 char limit
+- native SwiftUI app
+- streaming conversation rendering
+- tool call/result views
+- image drag/drop and paste
+- slash command popup
+- zoom support
+- auto-scroll behavior
+- theme toggle
 
-### 5. macOS Client
+The macOS client is still a major client surface, but its Swift files are large and modularization remains backlog work.
 
-**Location:** `clients/macos/ChatAssistant/`
+### 8. File Server and Status Endpoint
 
-Native SwiftUI app. Connects to Gateway via WebSocket.
+Location: `gateway/src/file-server.ts`
 
-**Key Files:**
-- `ChatView.swift` - Main UI, message list, input, scroll behavior
-- `ChatService.swift` - WebSocket client, message parsing
-- `MessageViews.swift` - Message bubbles, tool cards, thinking blocks
-- `Models.swift` - Data models, theme definitions
+HTTP endpoint:
 
-**Features:**
-- Real-time streaming display
-- Tool call visualization (expandable cards)
-- Image display (drag/drop, paste, file drop)
-- Slash command popup (`/new`, `/model`, `/status`)
-- Zoom support (Cmd++, Cmd+-)
-- Auto-scroll with sticky positioning
-- Theme toggle (Standard / Terminal)
+- `http://127.0.0.1:3457/files/<absolute-path>`
+- `http://127.0.0.1:3457/status`
 
-### 6. Pi TUI Bridge
+Responsibilities:
 
-**Location:** `~/.pi/agent/extensions/gateway-bridge.ts`
+- serve saved image files to browser clients
+- constrain file access to allowed roots
+- provide runtime status JSON for the CLI and external checks
 
-Extension that allows Pi TUI to connect to Gateway as a client. Pi TUI becomes a "dumb" UI - Gateway owns the agent loop.
+### 9. Session Management
 
-**Usage:**
-```bash
-# In Pi TUI
-pi extensions enable gateway-bridge
-pi --provider gateway-bridge
-```
+Location: `gateway/src/session-manager.ts`
 
-**Flow:**
-1. Bridge connects to `ws://localhost:3456/pi-client`
-2. User types in TUI → bridge forwards to Gateway
-3. Gateway runs Pi RPC → streams events back
-4. Bridge translates Gateway events → Pi native events
-5. TUI renders natively (tool blocks, thinking, etc.)
+Current session behavior:
 
-### 7. Memory System
+- main session lives at `PI_SESSION_PATH`
+- `/new` archives current session and starts a fresh one
+- auto-compaction events are observed and used for archival/rotation logic
+- `clear` is broadcast to clients after session reset flows
 
-**Components:**
-- **Session archival** - `SessionManager` archives to `sessions/archived/` on compaction or `/new`
-- **Memory Watcher** - Background process parses session, extracts facts via LLM to `memory.md`
-- **Yesterday rotation** - `yesterday.md` keeps last 3 days, rotated daily
-- **Context injection** - Agent instructed to read `memory.md` and `yesterday.md` on start
+Runtime paths typically point to `~/assistant_main/sessions/main.jsonl` and `~/assistant_main/sessions/archived/`.
 
-**Files:**
-- `~/assistant_main/memory.md` - Long-term extracted memories
-- `~/assistant_main/yesterday.md` - Recent context (rotated)
-- `gateway/src/memory-watcher.ts` - Extraction logic
-- `gateway/prompts/memory-prompt.md` - LLM extraction prompt
-- `gateway/prompts/yesterday-prompt.md` - Daily summary prompt
+### 10. Memory System
 
-### 8. Heartbeat
+Location: `gateway/src/memory-watcher.ts`
 
-**Location:** `gateway/src/heartbeat.ts`
+Current behavior:
 
-Periodic proactive messaging. Injects a prompt on interval for the agent to check tasks/reminders.
+- watches session history on an interval
+- extracts memory artifacts with an LLM
+- writes memory outputs into the configured output directory, typically `~/assistant_main`
+- maintains watcher state in a sidecar state file
 
-**Configuration:**
-- `HEARTBEAT_INTERVAL_MS` (default: 15 minutes)
-- `heartbeat.md` prompt template with `{{TIME}}` placeholder
+The current repo code references `memory.md` directly. Older docs that mention additional prompt files in-repo are out of date unless those files exist in the configured runtime directory.
 
-**Behavior:**
-- Agent can respond with actions or `[[NO_ACTION]]`
-- `[[NO_ACTION]]` responses are filtered (not sent to clients)
-- Real responses broadcast to all clients
+### 11. Heartbeat
 
-### 9. Image Storage
+Location: `gateway/src/heartbeat.ts`
 
-**Location:** `gateway/src/image-storage.ts`
+Current behavior:
 
-Manages images to keep session files small.
+- sends internal prompts on an interval
+- skips while user prompts are active
+- skips when recent user activity falls inside the quiet window
+- broadcasts only real proactive responses, not `[[NO_ACTION]]`
 
-**Behavior:**
-- Incoming images (base64) saved to `~/assistant_main/images/YYYYMMDD-HHMMSS-{hash}.{ext}`
-- Session stores `{type: "image", path: "/full/path"}` instead of base64
-- WebSocket sends file paths; clients load on demand
-- `sanitizeForHistory()` converts base64 in old sessions to paths
+Heartbeat-related rendering/filtering across clients is still an active bug-prone area, especially in the Web UI.
+
+### 12. CLI
+
+Entry points:
+
+- `gateway/bin/personalos.mjs`
+- `gateway/src/cli/index.ts`
+
+Capabilities:
+
+- `run`
+- `start`
+- `start --webui`
+- `stop`
+- `restart`
+- `status`
+- `logs`
+
+This is not packaged as a standalone binary yet, but it is already a real lifecycle manager for local use.
 
 ## Data Flows
 
-### Normal Message Flow
-```
-User (Telegram/macOS/TUI)
-    ↓
-Gateway receives (Telegram bot or WebSocket)
-    ↓
-Pi RPC prompt()
-    ↓
-Pi streams events (text_delta, tool_start, tool_output, tool_end, done)
-    ↓
-BroadcastManager distributes to all connected clients
-    ↓
-Telegram: Edit message in place
-macOS: Update SwiftUI state
-TUI: Render native blocks
+### User Prompt Flow
+
+```text
+Client prompt
+  ↓
+Gateway validates and records source
+  ↓
+BroadcastManager sends user echo to other clients
+  ↓
+Pi RPC streams events
+  ↓
+BroadcastManager serializes and forwards events
+  ↓
+Clients render streaming turn
 ```
 
-### Session Archival Flow
-```
-User sends /new (or auto-compaction triggers)
-    ↓
-SessionManager.archiveSession()
-    ↓
-Copy main.jsonl → sessions/archived/main_TIMESTAMP.jsonl
-    ↓
-Pi RPC newSession() (truncates main.jsonl)
-    ↓
-Broadcast "clear" to all clients
-    ↓
-Telegram notification: "Session archived"
+### History Flow
+
+```text
+Client connects
+  ↓
+Gateway reads session JSONL
+  ↓
+Image/base64 content is sanitized to file-backed references
+  ↓
+Gateway sends history payload
+  ↓
+Client hydrates local message state
 ```
 
 ### Image Flow
-```
-User pastes image into macOS client
-    ↓
-Convert to base64, send "prompt_with_images"
-    ↓
-Gateway: ImageStorage.saveImage() → disk
-    ↓
-Send to Pi: base64 data (for LLM)
-    ↓
-Pi processes, may generate output image
-    ↓
-Gateway: Save output image, broadcast path to clients
-    ↓
-Clients display from file path
+
+```text
+Client uploads image
+  ↓
+Gateway validates and saves image to disk
+  ↓
+Gateway forwards base64 image data to Pi RPC
+  ↓
+Session/history references are stored and later served by file server
+  ↓
+Browser clients load image via :3457/files/...
 ```
 
-## File Structure
+### Heartbeat Flow
 
-```
-~/Development/assistant/
-├── gateway/
-│   ├── src/
-│   │   ├── index.ts              # Main entry
-│   │   ├── websocket-server.ts   # WS server, routing
-│   │   ├── pi-client-handler.ts  # Pi TUI bridge handler
-│   │   ├── broadcast.ts          # Multi-client distribution
-│   │   ├── telegram-client.ts    # Telegram broadcast adapter
-│   │   ├── telegram.ts           # Telegram bot, commands
-│   │   ├── pi-rpc.ts             # Pi RPC wrapper
-│   │   ├── session-manager.ts    # Session archival
-│   │   ├── memory-watcher.ts     # Background extraction
-│   │   ├── heartbeat.ts          # Proactive messaging
-│   │   ├── image-storage.ts      # Image persistence
-│   │   ├── prompt-handler.ts     # Tool formatting
-│   │   ├── types-ws.ts           # WebSocket type definitions
-│   │   └── config.ts             # Environment config
-│   ├── prompts/
-│   │   ├── memory-prompt.md      # Memory extraction prompt
-│   │   └── yesterday-prompt.md   # Daily summary prompt
-│   └── package.json
-├── clients/
-│   └── macos/
-│       └── ChatAssistant/
-│           ├── Sources/
-│           │   ├── ChatAssistant.swift
-│           │   ├── ChatView.swift
-│           │   ├── ChatService.swift
-│           │   ├── Models.swift
-│           │   └── MessageViews.swift
-│           └── Package.swift
-├── docs/
-│   ├── ARCHITECTURE.md           # This file
-│   └── ROADMAP.md                # Feature roadmap and specs
-└── tasks/                        # Active implementation tasks
-
-~/assistant_main/                  # Runtime data (configured in .env)
-├── sessions/
-│   ├── main.jsonl                # Active session
-│   └── archived/                 # Archived sessions
-├── images/                       # Stored images
-├── memory.md                     # Extracted memories
-└── yesterday.md                  # Recent context (rotated)
-
-~/.pi/agent/extensions/
-└── gateway-bridge.ts             # Pi TUI bridge extension
+```text
+Heartbeat timer fires
+  ↓
+Gateway checks busy state and quiet window
+  ↓
+Internal Pi prompt runs
+  ↓
+No-op markers are dropped
+  ↓
+Real proactive response is broadcast
 ```
 
-## Configuration
+## Runtime Paths
 
-### Gateway (.env)
-```env
-# Required for Telegram
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_ALLOWED_USER_ID=...
+Common runtime paths:
 
-# Paths
-PI_SESSION_PATH=~/assistant_main/sessions/main.jsonl
-PI_CWD=~/assistant_main
+- `~/assistant_main/sessions/main.jsonl`
+- `~/assistant_main/sessions/archived/`
+- `~/assistant_main/images/`
+- `~/assistant_main/logs/gateway.log`
+- `~/assistant_main/run/personalos.pid`
+- `~/assistant_main/memory.md`
 
-# Intervals (ms)
-MEMORY_SCAN_INTERVAL_MS=600000    # 10 min
-HEARTBEAT_INTERVAL_MS=900000      # 15 min
+## Known Documentation Boundaries
 
-# Models
-MEMORY_MODEL=glm-4.7              # Cheaper for memory extraction
-```
-
-### Service CLI (`personalos`)
-
-Manage the gateway as a background service or run it in foreground:
-
-```bash
-# Foreground
-personalos run
-
-# Daemon-style lifecycle
-personalos start
-personalos stop
-personalos restart
-personalos status
-
-# Logs
-personalos logs
-personalos logs -f
-```
-
-Runtime paths (all configurable in `gateway/.env`):
-
-- `RUNTIME_DIR` (default: `<PI_CWD>/run`)
-- `LOG_DIR` (default: `<PI_CWD>/logs`)
-- `PID_FILE` (default: `<PI_CWD>/run/personalos.pid`)
-- `LOG_FILE` (default: `<PI_CWD>/logs/gateway.log`)
-
-### Pi Extension (gateway-bridge)
-Auto-detects Gateway at `ws://localhost:3456/pi-client`. No configuration needed.
-
-## Key Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| **Session ownership** | Gateway owns Pi RPC | Simpler than handoff model, no lock files |
-| **Multi-client** | BroadcastManager pattern | All clients see same state simultaneously |
-| **Pi TUI support** | Bridge extension | TUI renders natively, Gateway owns logic |
-| **Image storage** | File-based with path refs | Keeps session files small, WS payloads fast |
-| **Memory extraction** | Background LLM process | Non-blocking, runs on interval |
-| **Heartbeats** | Prompt injection | Agent gets full context to make decisions |
-
-## Deprecated Patterns
-
-The following were removed/deprecated:
-
-- **TUI handoff** (`/takeover`, lock files, session competition) - Removed in favor of bridge mode
-- **TUI detection via pgrep** - No longer needed
-- **Session-watcher.ts** - Removed, gateway owns session continuously
-
-## Related Documentation
-
-- `README.md` - Project overview, quick start
-- `AGENTS.md` - Agent operational guidance
-- `docs/ROADMAP.md` - Feature roadmap and specs
-- `WORKLOG.md` - Daily changelog
-- `ISSUES.md` - Bug tracking
-
-## External References
-
-- **Pi RPC docs:** `/usr/local/lib/node_modules/@mariozechner/pi-coding-agent/docs/rpc.md`
-- **Pi session docs:** `/usr/local/lib/node_modules/@mariozechner/pi-coding-agent/docs/session.md`
-- **Pi extensions:** `/usr/local/lib/node_modules/@mariozechner/pi-coding-agent/docs/extensions.md`
-- **grammY:** https://grammy.dev/
+- `README.md` is for setup and orientation.
+- This file is the authoritative architecture overview.
+- `docs/ROADMAP.md` should be read as current direction and known gaps, not a guaranteed record of every implemented detail.

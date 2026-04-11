@@ -153,8 +153,10 @@ export async function startGateway(): Promise<void> {
     config.pi.cwd,
     {
       intervalMs: config.heartbeat.intervalMs,
+      quietWindowMs: Math.max(config.heartbeat.intervalMs, 15 * 60 * 1000),
       onTick: () => statusProvider.recordHeartbeat(),
       isBusy: () => broadcastManager.isPromptInFlight(),
+      hasRecentUserActivity: (windowMs) => broadcastManager.hasRecentUserActivity(windowMs),
     }
   );
   heartbeat.start();

@@ -20,6 +20,7 @@ export class BroadcastManager {
     | { message: string; clientIds: Set<string>; startedAt: number; originClientId: string }
     | null = null;
   private sessionManager: SessionManager | null = null;
+  private lastUserActivityAt = 0;
 
   constructor(private pi: PiRpcClient) {
     this.setupPiListeners();
@@ -67,6 +68,12 @@ export class BroadcastManager {
    * Returns the clients that will receive this response
    */
   async sendPrompt(message: string, originatingClientId: string): Promise<Set<string>> {
+    if (this.currentPrompt || this.pi.isPromptActive) {
+      throw new Error("Assistant is busy with another prompt");
+    }
+
+    this.lastUserActivityAt = Date.now();
+
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
     this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
@@ -79,7 +86,7 @@ export class BroadcastManager {
 
     // Send prompt to Pi (this starts the streaming)
     // Note: We don't await here - Pi runs asynchronously and emits events
-    this.pi.prompt(message).catch((err) => {
+    this.pi.prompt(message, { source: "user" }).catch((err) => {
       console.error("[Broadcast] Pi prompt error:", err);
       this.currentPrompt = null;
       this.broadcast({
@@ -100,6 +107,12 @@ export class BroadcastManager {
     images: { data: string; mimeType: string; path?: string }[],
     originatingClientId: string
   ): Promise<Set<string>> {
+    if (this.currentPrompt || this.pi.isPromptActive) {
+      throw new Error("Assistant is busy with another prompt");
+    }
+
+    this.lastUserActivityAt = Date.now();
+
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
     this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
@@ -110,7 +123,7 @@ export class BroadcastManager {
     // Note: We don't await here - Pi runs asynchronously and emits events
     // Strip paths before sending to Pi (Pi only needs base64)
     const piImages = images.map(({ data, mimeType }) => ({ data, mimeType }));
-    this.pi.promptWithImages(message, piImages).catch((err) => {
+    this.pi.promptWithImages(message, piImages, { source: "user" }).catch((err) => {
       console.error("[Broadcast] Pi promptWithImages error:", err);
       this.currentPrompt = null;
       this.broadcast({
@@ -209,7 +222,12 @@ export class BroadcastManager {
   }
 
   isPromptInFlight(): boolean {
-    return this.currentPrompt !== null;
+    return this.currentPrompt !== null || this.pi.isPromptActive;
+  }
+
+  hasRecentUserActivity(windowMs: number): boolean {
+    if (this.lastUserActivityAt === 0) return false;
+    return Date.now() - this.lastUserActivityAt < windowMs;
   }
 
   private setupPiListeners(): void {
@@ -220,7 +238,24 @@ export class BroadcastManager {
     const lastToolOutputById = new Map<string, string>();
     let eventQueue: Promise<void> = Promise.resolve();
 
-    const handlePiEvent = async (event: PiEvent): Promise<void> => {
+    const handlePiEvent = async (
+      event: PiEvent,
+      promptSource: "user" | "internal" | null
+    ): Promise<void> => {
+      if (promptSource !== "user") {
+        if (event.type === "agent_end") {
+          console.log(
+            `[Broadcast] Ignoring agent_end for non-user prompt (source=${promptSource ?? "unknown"})`
+          );
+        }
+        if (event.type === "agent_end") {
+          currentThinking = "";
+          lastToolOutputById.clear();
+          insideTool = false;
+        }
+        return;
+      }
+
       // Handle tool execution events
       if (event.type === "tool_execution_start") {
         insideTool = true;
@@ -356,6 +391,11 @@ export class BroadcastManager {
         const proseResponse = currentText;
         const completedPrompt = this.currentPrompt;
         const durationMs = completedPrompt ? Date.now() - completedPrompt.startedAt : undefined;
+        if (!completedPrompt) {
+          console.warn(
+            `[Broadcast] Received user agent_end with no tracked prompt; finalLen=${proseResponse.length}`
+          );
+        }
 
         const imageExtractions = this.extractMarkdownImages(proseResponse);
         for (const image of imageExtractions.images) {
@@ -416,8 +456,10 @@ export class BroadcastManager {
         return;
       }
 
+      const promptSource = this.pi.promptSource;
+
       eventQueue = eventQueue
-        .then(() => handlePiEvent(event))
+        .then(() => handlePiEvent(event, promptSource))
         .catch((err) => {
           console.error("[Broadcast] Failed processing Pi event:", err);
         });

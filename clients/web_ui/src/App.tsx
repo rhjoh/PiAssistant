@@ -24,7 +24,7 @@ function isHeartbeatMessage(content: string | MessageContent[]): boolean {
   const text = typeof content === 'string' 
     ? content 
     : content.map(c => c.type === 'text' ? c.content : '').join('');
-  const trimmed = text.trim();
+  const trimmed = text.trim().replace(/^`+|`+$/g, '');
   // Heartbeat user messages start with "[Heartbeat]"
   // Heartbeat assistant responses contain "[[NO_ACTION]]"
   return trimmed.startsWith('[Heartbeat]') || trimmed.includes('[[NO_ACTION]]');
@@ -338,17 +338,8 @@ export default function App() {
         }
 
         setMessages(prev => {
-          // Find target: use streamingIdRef if available, otherwise find most recent streaming assistant
           let targetId = streamingIdRef.current;
           let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-
-          if (!targetMsg) {
-            targetMsg = [...prev].reverse().find(m => m.role === 'assistant' && m.isStreaming);
-            if (targetMsg) {
-              streamingIdRef.current = targetMsg.id;
-              targetId = targetMsg.id;
-            }
-          }
 
           // No streaming message found - create one
           if (!targetMsg) {
@@ -400,17 +391,8 @@ export default function App() {
         setIsProcessing(true);
 
         setMessages(prev => {
-          // Find target: use streamingIdRef if available, otherwise find most recent streaming assistant
           let targetId = streamingIdRef.current;
           let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          if (!targetMsg) {
-            targetMsg = [...prev].reverse().find(m => m.role === 'assistant' && m.isStreaming);
-            if (targetMsg) {
-              streamingIdRef.current = targetMsg.id;
-              targetId = targetMsg.id;
-            }
-          }
           
           // No streaming message found - create one
           if (!targetMsg) {
@@ -453,17 +435,8 @@ export default function App() {
         const data = msg.data as { toolCallId: string; toolName: string; args?: unknown };
         
         setMessages(prev => {
-          // Find target: use streamingIdRef if available, otherwise find most recent streaming assistant
           let targetId = streamingIdRef.current;
           let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          if (!targetMsg) {
-            targetMsg = [...prev].reverse().find(m => m.role === 'assistant' && m.isStreaming);
-            if (targetMsg) {
-              streamingIdRef.current = targetMsg.id;
-              targetId = targetMsg.id;
-            }
-          }
           
           // No streaming message found - create one
           if (!targetMsg) {
@@ -506,17 +479,8 @@ export default function App() {
         const resultContent = data.truncated ? data.output + '\n... (truncated)' : data.output;
         
         setMessages(prev => {
-          // Find target: use streamingIdRef if available, otherwise find most recent streaming assistant
           let targetId = streamingIdRef.current;
           let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          if (!targetMsg) {
-            targetMsg = [...prev].reverse().find(m => m.role === 'assistant' && m.isStreaming);
-            if (targetMsg) {
-              streamingIdRef.current = targetMsg.id;
-              targetId = targetMsg.id;
-            }
-          }
           
           // No streaming message found - create one
           if (!targetMsg) {
@@ -565,14 +529,6 @@ export default function App() {
           let targetId = streamingIdRef.current;
           let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
 
-          if (!targetMsg) {
-            targetMsg = [...prev].reverse().find(m => m.role === 'assistant' && m.isStreaming);
-            if (targetMsg) {
-              targetId = targetMsg.id;
-              streamingIdRef.current = targetId;
-            }
-          }
-
           if (!targetMsg || !targetId) {
             const newId = `ai-${Date.now()}-stream`;
             streamingIdRef.current = newId;
@@ -603,38 +559,35 @@ export default function App() {
           finalText?: string;
           usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
         } | undefined;
+        const finalText = doneData?.finalText?.trim();
+        const normalizedFinalText = finalText?.replace(/^`+|`+$/g, '');
         let currentId = streamingIdRef.current;
         if (currentId) {
-          // Ensure current target is still a valid streaming assistant row.
           setMessages(prev => {
             const activeExists = prev.some(m => m.id === currentId && m.role === 'assistant' && m.isStreaming);
-            if (!activeExists) {
-              currentId = findLatestStreamingAssistantId(prev);
-            }
-            if (!currentId) return prev;
+            if (!activeExists) return prev;
 
             const targetMsg = prev.find(m => m.id === currentId);
             // Filter out heartbeat responses
-            if (targetMsg && isHeartbeatMessage(targetMsg.content)) {
+            if ((targetMsg && isHeartbeatMessage(targetMsg.content)) || (normalizedFinalText && isHeartbeatMessage(normalizedFinalText))) {
               return prev.filter(m => m.id !== currentId);
             }
             return prev.map(m =>
               m.id === currentId
                 ? (() => {
-                    const finalText = doneData?.finalText?.trim();
                     const currentContent = Array.isArray(m.content) ? m.content : [];
                     let mergedContent = currentContent;
 
-                    if (finalText) {
+                    if (normalizedFinalText) {
                       const firstTextIdx = currentContent.findIndex(part => part.type === 'text');
                       if (firstTextIdx >= 0) {
                         // Preserve block order; only replace finalized text content in-place.
                         mergedContent = currentContent.map((part, idx) =>
-                          idx === firstTextIdx ? { type: 'text' as const, content: finalText } : part
+                          idx === firstTextIdx ? { type: 'text' as const, content: normalizedFinalText } : part
                         );
                       } else {
                         // No prior text block (e.g. tool-only streaming) — append finalized prose at the end.
-                        mergedContent = [...currentContent, { type: 'text' as const, content: finalText }];
+                        mergedContent = [...currentContent, { type: 'text' as const, content: normalizedFinalText }];
                       }
                     }
 
@@ -650,44 +603,16 @@ export default function App() {
           });
           streamingIdRef.current = null;
         } else {
-          // Ref lost (e.g. reconnect/history race): try to finalize the latest streaming row anyway.
-          setMessages(prev => {
-            const fallbackId = findLatestStreamingAssistantId(prev);
-            if (!fallbackId) return prev;
-            const targetMsg = prev.find(m => m.id === fallbackId);
-            if (targetMsg && isHeartbeatMessage(targetMsg.content)) {
-              return prev.filter(m => m.id !== fallbackId);
-            }
-            return prev.map(m =>
-              m.id === fallbackId
-                ? (() => {
-                    const finalText = doneData?.finalText?.trim();
-                    const currentContent = Array.isArray(m.content) ? m.content : [];
-                    let mergedContent = currentContent;
-
-                    if (finalText) {
-                      const firstTextIdx = currentContent.findIndex(part => part.type === 'text');
-                      if (firstTextIdx >= 0) {
-                        // Preserve block order; only replace finalized text content in-place.
-                        mergedContent = currentContent.map((part, idx) =>
-                          idx === firstTextIdx ? { type: 'text' as const, content: finalText } : part
-                        );
-                      } else {
-                        // No prior text block (e.g. tool-only streaming) — append finalized prose at the end.
-                        mergedContent = [...currentContent, { type: 'text' as const, content: finalText }];
-                      }
-                    }
-
-                    return {
-                      ...m,
-                      content: mergedContent,
-                      isStreaming: false,
-                      tokenUsage: normalizeTokenUsage(doneData?.usage),
-                    };
-                  })()
-                : m
-            );
-          });
+          if (normalizedFinalText) {
+            setMessages(prev => [...prev, {
+              id: `ai-${Date.now()}`,
+              role: 'assistant',
+              content: [{ type: 'text' as const, content: normalizedFinalText }],
+              isStreaming: false,
+              tokenUsage: normalizeTokenUsage(doneData?.usage),
+              timestamp: Date.now(),
+            }]);
+          }
         }
         // Reset heartbeat skip flag after processing done
         streamingIdRef.current = null;
@@ -711,6 +636,9 @@ export default function App() {
 
       case 'proactive': {
         const proactiveMsg = (msg.data as { message: string }).message;
+        if (isHeartbeatMessage(proactiveMsg)) {
+          break;
+        }
         setMessages(prev => [...prev, {
           id: `ai-${Date.now()}`,
           role: 'assistant',
