@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { BootSequence } from '@/components/BootSequence';
 import { StatusBar } from '@/components/StatusBar';
 import { Sidebar } from '@/components/Sidebar';
 import { MessageFeed } from '@/components/MessageFeed';
@@ -96,7 +95,7 @@ function findLatestStreamingAssistantId(messages: ChatMessage[]): string | null 
 }
 
 export default function App() {
-  const [bootComplete, setBootComplete] = useState(false);
+
   const [sessionId] = useState(() => generateSessionId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -291,14 +290,32 @@ export default function App() {
           });
         }
         
+        // Merge consecutive assistant messages from the session file.
+        // Pi stores post-tool text as a separate assistant entry,
+        // so [thinking, toolCall] and [text] end up as two ChatMessages.
+        // Merge any consecutive assistant entries (real turns are separated by user messages).
+        const merged: ChatMessage[] = [];
+        for (const msg of loadedMessages) {
+          const prev = merged[merged.length - 1];
+          if (prev && msg.role === 'assistant' && prev.role === 'assistant') {
+            const prevContent = Array.isArray(prev.content) ? prev.content : [{ type: 'text', content: prev.content }];
+            const msgContent = Array.isArray(msg.content) ? msg.content : [{ type: 'text', content: msg.content }];
+            prev.content = [...prevContent, ...msgContent] as MessageContent[];
+            // Take the token usage from whichever entry has it (usually the last one in the turn)
+            if (msg.tokenUsage) prev.tokenUsage = msg.tokenUsage;
+          } else {
+            merged.push(msg);
+          }
+        }
+
         setMessages(prev => {
           let next: ChatMessage[];
           if (!hasHydratedHistoryRef.current || prev.length === 0) {
             hasHydratedHistoryRef.current = true;
-            next = loadedMessages;
+            next = merged;
           } else {
             hasHydratedHistoryRef.current = true;
-            next = mergeHistoryMessages(prev, loadedMessages);
+            next = mergeHistoryMessages(prev, merged);
           }
 
           // Rebind stream target after hydration/merge to avoid stale refs.
@@ -579,16 +596,21 @@ export default function App() {
                     let mergedContent = currentContent;
 
                     if (normalizedFinalText) {
-                      const firstTextIdx = currentContent.findIndex(part => part.type === 'text');
-                      if (firstTextIdx >= 0) {
-                        // Preserve block order; only replace finalized text content in-place.
-                        mergedContent = currentContent.map((part, idx) =>
-                          idx === firstTextIdx ? { type: 'text' as const, content: normalizedFinalText } : part
-                        );
-                      } else {
-                        // No prior text block (e.g. tool-only streaming) — append finalized prose at the end.
-                        mergedContent = [...currentContent, { type: 'text' as const, content: normalizedFinalText }];
-                      }
+                      // Consolidate all text blocks into one to avoid duplicates.
+                      // Tool calls/thinking can split streamed text into multiple blocks;
+                      // done.finalText is the single authoritative text.
+                      const textBlock = { type: 'text' as const, content: normalizedFinalText };
+                      let textInserted = false;
+                      mergedContent = currentContent.map(part => {
+                        if (part.type === 'text') {
+                          if (!textInserted) {
+                            textInserted = true;
+                            return textBlock;
+                          }
+                          return null; // remove duplicate text blocks
+                        }
+                        return part;
+                      }).filter((part): part is MessageContent => part !== null);
                     }
 
                     return {
@@ -719,6 +741,7 @@ export default function App() {
 
 
 
+
   const handleSend = useCallback((text: string, images?: UploadImage[]) => {
     if (!isConnected || (!text.trim() && (!images || images.length === 0))) return;
 
@@ -810,10 +833,8 @@ export default function App() {
   }, [isProcessing, handleAbort]);
 
   useEffect(() => {
-    if (bootComplete && textareaRef.current) {
-      textareaRef.current.focus();
-    }
-  }, [bootComplete]);
+    textareaRef.current?.focus();
+  }, []);
 
   const latestUsage = [...messages]
     .reverse()
@@ -839,10 +860,6 @@ export default function App() {
   const compactThreshold = estimatedContextWindow - reserveTokens;
   const currentContextTokens = sessionStats.currentContextTokens;
   const contextPercentage = Math.min(100, Math.round((currentContextTokens / compactThreshold) * 100));
-
-  if (!bootComplete) {
-    return <BootSequence onComplete={() => setBootComplete(true)} />;
-  }
 
   return (
     <div className="relative flex h-full flex-col">

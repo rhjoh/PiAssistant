@@ -1,4 +1,4 @@
-import React from 'react'
+// Note: StrictMode removed — double-mounting causes WebSocket connect/disconnect races
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -16,11 +16,9 @@ window.addEventListener('beforeunload', () => {
 })
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>
-    </ErrorBoundary>
-  </React.StrictMode>,
+  <ErrorBoundary>
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
+  </ErrorBoundary>,
 )
