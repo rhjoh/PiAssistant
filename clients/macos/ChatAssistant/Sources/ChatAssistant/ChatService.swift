@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 protocol ChatServiceDelegate: AnyObject {
-    func chatServiceDidConnect(_ service: ChatService, model: String?)
+    func chatServiceDidConnect(_ service: ChatService, model: WSModelInfo?)
     func chatServiceDidDisconnect(_ service: ChatService)
     func chatService(_ service: ChatService, didReceiveError error: String)
     func chatService(_ service: ChatService, didReceiveTextDelta delta: String)
@@ -14,7 +14,7 @@ protocol ChatServiceDelegate: AnyObject {
     func chatService(_ service: ChatService, didReceiveImage source: String, alt: String?)
     func chatService(_ service: ChatService, didCompleteWithFinalText text: String, usage: TokenUsageData?)
     func chatService(_ service: ChatService, didReceiveHistory messages: [ChatMessage])
-    func chatService(_ service: ChatService, didReceiveState model: String?, provider: String?, contextTokens: Int?)
+    func chatService(_ service: ChatService, didReceiveState model: WSModelInfo?, contextTokens: Int?)
     func chatService(_ service: ChatService, didReceiveProactive message: String)
 }
 
@@ -200,8 +200,8 @@ class ChatService: NSObject, ObservableObject {
             case .state(let data):
                 connectionState = .connected(model: data.model)
                 // Only notify delegate if we have actual state data (not just isProcessing updates)
-                if data.model != nil || data.provider != nil || data.contextTokens != nil {
-                    delegate?.chatService(self, didReceiveState: data.model, provider: data.provider, contextTokens: data.contextTokens)
+                if data.model != nil || data.contextTokens != nil {
+                    delegate?.chatService(self, didReceiveState: data.model, contextTokens: data.contextTokens)
                 }
                 
             case .history(let messagesData):

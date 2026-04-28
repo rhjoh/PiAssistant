@@ -671,7 +671,7 @@ struct ConnectionStatusView: View {
             return "Connecting..."
         case .connected(let model):
             if let model = model {
-                return "Connected • \(model)"
+                return "Connected • \(model.name)"
             }
             return "Connected"
         case .error(let message):

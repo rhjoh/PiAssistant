@@ -330,15 +330,20 @@ enum WSServerMessage: Decodable {
 
 struct WSConnectionData: Decodable {
     let connected: Bool
-    let model: String?
-    let provider: String?
+    let model: WSModelInfo?
 }
 
 struct WSStateData: Decodable {
-    let model: String?
-    let provider: String?
+    let model: WSModelInfo?
+    let contextWindow: Int?
     let contextTokens: Int?
     let isProcessing: Bool
+}
+
+struct WSModelInfo: Decodable, Equatable {
+    let provider: String
+    let id: String
+    let name: String
 }
 
 // MARK: - Helper Types
@@ -395,7 +400,7 @@ struct AnyCodable: Codable {
 enum ConnectionState: Equatable {
     case disconnected
     case connecting
-    case connected(model: String?)
+    case connected(model: WSModelInfo?)
     case error(String)
 }
 
