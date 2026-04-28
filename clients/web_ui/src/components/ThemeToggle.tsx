@@ -1,9 +1,8 @@
 import { useTheme } from '@/hooks/useTheme';
 
 const THEME_LABELS: Record<string, string> = {
-  ops: 'OPS',
-  saas: 'SaaS',
-  llama: 'Llama',
+  foundry: 'Foundry',
+  'foundry-light': 'Foundry Day',
 };
 
 export function ThemeToggle() {
@@ -39,8 +38,11 @@ export function ThemeToggle() {
         e.currentTarget.style.color = 'var(--text-secondary)';
       }}
     >
-      {theme === 'llama' && (
-        <span style={{ fontSize: '11px', marginRight: '4px' }}>🦙</span>
+      {theme === 'foundry' && (
+        <span style={{ fontSize: '11px', marginRight: '4px' }}>▣</span>
+      )}
+      {theme === 'foundry-light' && (
+        <span style={{ fontSize: '11px', marginRight: '4px' }}>◫</span>
       )}
       <span>{THEME_LABELS[theme]}</span>
     </button>

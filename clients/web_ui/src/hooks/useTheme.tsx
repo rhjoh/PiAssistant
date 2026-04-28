@@ -1,12 +1,11 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 
-type Theme = 'ops' | 'saas' | 'llama';
+type Theme = 'foundry' | 'foundry-light';
 
 interface ThemeContextType {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   cycleTheme: () => void;
-  nextTheme: () => Theme;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -17,9 +16,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem(THEME_STORAGE_KEY) as Theme;
-      if (stored === 'saas' || stored === 'llama' || stored === 'ops') return stored;
+      if (stored === 'foundry' || stored === 'foundry-light') return stored;
     }
-    return 'ops';
+    return 'foundry';
   });
 
   const setTheme = (newTheme: Theme) => {
@@ -28,15 +27,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   };
 
   const cycleTheme = () => {
-    const order: Theme[] = ['ops', 'saas', 'llama'];
-    const idx = order.indexOf(theme);
-    setTheme(order[(idx + 1) % order.length]);
-  };
-
-  const nextTheme = (): Theme => {
-    const order: Theme[] = ['ops', 'saas', 'llama'];
-    const idx = order.indexOf(theme);
-    return order[(idx + 1) % order.length];
+    setTheme(theme === 'foundry' ? 'foundry-light' : 'foundry');
   };
 
   // Apply theme class to document
@@ -45,7 +36,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [theme]);
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme, nextTheme }}>
+    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme }}>
       {children}
     </ThemeContext.Provider>
   );

@@ -13,23 +13,26 @@ interface SidebarProps {
   models?: ModelInfo[];
   currentModel?: ModelInfo;
   disabled?: boolean;
+  isProcessing?: boolean;
+  isConnected?: boolean;
 }
 
-export function Sidebar({ 
-  onNewChat, 
+export function Sidebar({
+  onNewChat,
   onSwitchModel,
   models = [],
   currentModel,
-  disabled 
+  disabled,
+  isProcessing = false,
+  isConnected = false,
 }: SidebarProps) {
-  const { theme, cycleTheme, nextTheme } = useTheme();
+  const { theme, cycleTheme } = useTheme();
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
-  const isOps = theme === 'ops';
-  const isLlama = theme === 'llama';
-  const next = nextTheme();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const isFoundry = theme.startsWith('foundry');
 
-  // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -40,34 +43,56 @@ export function Sidebar({
     return () => window.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (showModelMenu && searchRef.current) {
+      searchRef.current.focus();
+    }
+    if (!showModelMenu) {
+      setModelSearch('');
+    }
+  }, [showModelMenu]);
+
   const handleModelSelect = (model: ModelInfo) => {
     onSwitchModel?.(model.provider, model.id);
     setShowModelMenu(false);
+    setModelSearch('');
   };
 
+  const filteredModels = modelSearch
+    ? models.filter(m => {
+        const q = modelSearch.toLowerCase();
+        return (
+          m.name.toLowerCase().includes(q) ||
+          m.id.toLowerCase().includes(q) ||
+          m.provider.toLowerCase().includes(q)
+        );
+      })
+    : models;
+
   return (
-    <div 
+    <div
       className="flex flex-col h-full select-none"
-      style={{ 
+      style={{
         width: '56px',
         background: 'var(--bg-secondary)',
         borderRight: '1px solid var(--border-color)',
       }}
     >
       {/* Logo */}
-      <div 
-        style={{ 
+      <div
+        style={{
           height: '44px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           borderBottom: '1px solid var(--border-color)',
+          position: 'relative',
         }}
       >
         <div style={{
           width: '28px',
           height: '28px',
-          borderRadius: '4px',
+          borderRadius: isFoundry ? '0' : '4px',
           background: 'var(--accent-primary)',
           display: 'flex',
           alignItems: 'center',
@@ -79,10 +104,47 @@ export function Sidebar({
         }}>
           π
         </div>
+        <div
+          title={isConnected ? 'Connected' : 'Disconnected'}
+          style={{
+            position: 'absolute',
+            bottom: '6px',
+            right: '10px',
+            width: '7px',
+            height: '7px',
+            borderRadius: '50%',
+            background: isConnected ? 'var(--accent-success)' : 'var(--accent-danger)',
+            border: `2px solid var(--bg-secondary)`,
+            transition: 'background var(--transition-medium)',
+          }}
+        />
       </div>
 
       {/* Actions */}
       <div className="flex flex-col items-center py-3 gap-2">
+        {isProcessing && (
+          <div
+            title="Processing..."
+            style={{
+              width: '40px',
+              height: '3px',
+              background: 'var(--bg-input)',
+              overflow: 'hidden',
+              marginBottom: '2px',
+            }}
+          >
+            <div
+              style={{
+                width: '100%',
+                height: '100%',
+                background: 'var(--accent-primary)',
+                animation: 'sidebar-pulse 1.2s ease-in-out infinite',
+                opacity: 0.6,
+              }}
+            />
+          </div>
+        )}
+
         {/* New Chat */}
         <button
           onClick={onNewChat}
@@ -95,8 +157,8 @@ export function Sidebar({
             alignItems: 'center',
             justifyContent: 'center',
             background: 'transparent',
-            border: `1px solid ${isOps ? 'var(--accent-primary)' : 'var(--border-color)'}`,
-            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border-color)',
+            borderRadius: isFoundry ? '0' : 'var(--radius-md)',
             color: 'var(--accent-primary)',
             cursor: disabled ? 'not-allowed' : 'pointer',
             opacity: disabled ? 0.5 : 1,
@@ -131,7 +193,7 @@ export function Sidebar({
               justifyContent: 'center',
               background: showModelMenu ? 'var(--accent-primary-dim)' : 'transparent',
               border: `1px solid ${showModelMenu ? 'var(--accent-primary)' : 'var(--border-color)'}`,
-              borderRadius: 'var(--radius-md)',
+              borderRadius: isFoundry ? '0' : 'var(--radius-md)',
               color: models.length === 0 ? 'var(--text-muted)' : 'var(--accent-primary)',
               cursor: disabled || models.length === 0 ? 'not-allowed' : 'pointer',
               opacity: disabled || models.length === 0 ? 0.5 : 1,
@@ -155,7 +217,6 @@ export function Sidebar({
             </svg>
           </button>
 
-          {/* Model Dropdown */}
           {showModelMenu && models.length > 0 && (
             <div
               style={{
@@ -165,10 +226,11 @@ export function Sidebar({
                 marginLeft: '8px',
                 width: '280px',
                 maxHeight: '400px',
-                overflow: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
                 background: 'var(--bg-elevated)',
                 border: '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
+                borderRadius: isFoundry ? '0' : 'var(--radius-md)',
                 boxShadow: 'var(--shadow-lg)',
                 zIndex: 100,
               }}
@@ -186,89 +248,137 @@ export function Sidebar({
               >
                 Select Model
               </div>
-              {models.map((model, index) => {
-                const isCurrent = currentModel?.provider === model.provider && 
-                                  currentModel?.id === model.id;
-                return (
-                  <button
-                    key={`${model.provider}-${model.id}`}
-                    onClick={() => handleModelSelect(model)}
+              <div style={{
+                padding: '6px 8px',
+                borderBottom: '1px solid var(--border-color)',
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: isFoundry ? '0' : 'var(--radius-sm)',
+                  padding: '4px 8px',
+                }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="Search models..."
                     style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
                       width: '100%',
-                      padding: '10px 12px',
-                      textAlign: 'left',
-                      background: isCurrent ? 'var(--accent-primary-dim)' : 'transparent',
+                      background: 'transparent',
                       border: 'none',
-                      borderBottom: index < models.length - 1 ? '1px solid var(--border-color)' : 'none',
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
+                      outline: 'none',
+                      fontSize: '12px',
+                      color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-primary)',
                     }}
-                    onMouseEnter={(e) => {
-                      if (!isCurrent) {
-                        e.currentTarget.style.background = 'var(--bg-hover)';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isCurrent) {
-                        e.currentTarget.style.background = 'transparent';
-                      }
-                    }}
-                  >
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      width: '100%',
-                    }}>
-                      <span style={{
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: 'var(--text-primary)',
-                        fontFamily: 'var(--font-primary)',
-                      }}>
-                        {model.name}
-                      </span>
-                      {isCurrent && (
+                  />
+                </div>
+              </div>
+              <div className="scrollbar-hide" style={{ flex: 1 }}>
+                {filteredModels.length === 0 ? (
+                  <div style={{
+                    padding: '16px 12px',
+                    textAlign: 'center' as const,
+                    fontSize: '12px',
+                    color: 'var(--text-muted)',
+                    fontFamily: 'var(--font-primary)',
+                  }}>
+                    No models match "{modelSearch}"
+                  </div>
+                ) : (
+                  filteredModels.map((model, index) => {
+                    const isCurrent = currentModel?.provider === model.provider &&
+                                      currentModel?.id === model.id;
+                    return (
+                      <button
+                        key={`${model.provider}-${model.id}`}
+                        onClick={() => handleModelSelect(model)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          width: '100%',
+                          padding: '10px 12px',
+                          textAlign: 'left',
+                          background: isCurrent ? 'var(--accent-primary-dim)' : 'transparent',
+                          border: 'none',
+                          borderBottom: index < filteredModels.length - 1 ? '1px solid var(--border-color)' : 'none',
+                          cursor: 'pointer',
+                          transition: 'all var(--transition-fast)',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isCurrent) {
+                            e.currentTarget.style.background = 'var(--bg-hover)';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isCurrent) {
+                            e.currentTarget.style.background = 'transparent';
+                          }
+                        }}
+                      >
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          width: '100%',
+                        }}>
+                          <span style={{
+                            fontSize: '13px',
+                            fontWeight: 500,
+                            color: 'var(--text-primary)',
+                            fontFamily: 'var(--font-primary)',
+                          }}>
+                            {model.name}
+                          </span>
+                          {isCurrent && (
+                            <span style={{
+                              marginLeft: 'auto',
+                              fontSize: '11px',
+                              color: 'var(--accent-primary)',
+                              fontFamily: 'var(--font-primary)',
+                            }}>
+                              ●
+                            </span>
+                          )}
+                        </div>
                         <span style={{
-                          marginLeft: 'auto',
                           fontSize: '11px',
-                          color: 'var(--accent-primary)',
+                          color: 'var(--text-muted)',
                           fontFamily: 'var(--font-primary)',
                         }}>
-                          ●
+                          {model.provider}/{model.id}
                         </span>
-                      )}
-                    </div>
-                    <span style={{
-                      fontSize: '11px',
-                      color: 'var(--text-muted)',
-                      fontFamily: 'var(--font-primary)',
-                    }}>
-                      {model.provider}/{model.id}
-                    </span>
-                  </button>
-                );
-              })}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Spacer */}
       <div style={{ flex: 1 }} />
 
       {/* Bottom actions */}
-      <div 
+      <div
         className="flex flex-col items-center py-3 gap-2"
         style={{ borderTop: '1px solid var(--border-color)' }}
       >
         {/* Theme toggle */}
         <button
           onClick={cycleTheme}
-          title={`Switch to ${next === 'ops' ? 'Ops' : next === 'saas' ? 'SaaS' : 'Llama'} theme`}
+          title={`Switch to ${theme === 'foundry' ? 'Foundry Day' : 'Foundry'} theme`}
           style={{
             width: '40px',
             height: '40px',
@@ -277,7 +387,7 @@ export function Sidebar({
             justifyContent: 'center',
             background: 'transparent',
             border: '1px solid var(--border-color)',
-            borderRadius: 'var(--radius-md)',
+            borderRadius: isFoundry ? '0' : 'var(--radius-md)',
             color: 'var(--text-secondary)',
             cursor: 'pointer',
             transition: 'all var(--transition-fast)',
@@ -291,8 +401,13 @@ export function Sidebar({
             e.currentTarget.style.color = 'var(--text-secondary)';
           }}
         >
-          {isOps ? (
-            /* Sun - switch to light */
+          {theme === 'foundry' ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 17l4-8 4 8H8z"></path>
+              <path d="M4 17h16"></path>
+              <path d="M12 9V5"></path>
+            </svg>
+          ) : (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="5"></circle>
               <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -303,16 +418,6 @@ export function Sidebar({
               <line x1="21" y1="12" x2="23" y2="12"></line>
               <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
               <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-            </svg>
-          ) : isLlama ? (
-            /* Flame/llama icon */
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2c.5 2.5-.5 5-2 7 1 0 2.5.5 3 2.5.5-2 1-3.5 2-4.5-.5 2.5.5 4.5 0 7a6 6 0 1 1-3-12z"></path>
-            </svg>
-          ) : (
-            /* Moon - switch to dark */
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
             </svg>
           )}
         </button>

@@ -118,6 +118,7 @@ export function SlashCommandMenu({ query, onSelect, onClose }: SlashCommandMenuP
   return (
     <div
       ref={containerRef}
+      className="scrollbar-hide"
       style={{
         position: 'absolute',
         bottom: '100%',
@@ -125,7 +126,6 @@ export function SlashCommandMenu({ query, onSelect, onClose }: SlashCommandMenuP
         marginBottom: '8px',
         width: '320px',
         maxHeight: '280px',
-        overflow: 'auto',
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-color)',
         borderRadius: 'var(--radius-md)',

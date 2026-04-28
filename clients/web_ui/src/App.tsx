@@ -4,8 +4,10 @@ import { Sidebar } from '@/components/Sidebar';
 import { MessageFeed } from '@/components/MessageFeed';
 import { InputArea } from '@/components/InputArea';
 import { DebugPanel } from '@/components/DebugPanel';
+import { TelemetryPanel } from '@/components/TelemetryPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { ChatMessage, WSMessage, SessionStats, MessageContent, TokenUsage, ModelInfo, UploadImage } from '@/types';
+import { useTheme } from '@/hooks/useTheme';
 
 const WS_URL = 'ws://localhost:3456';
 
@@ -94,7 +96,19 @@ function findLatestStreamingAssistantId(messages: ChatMessage[]): string | null 
   return null;
 }
 
+function findThinkingIndex(contents: MessageContent[], thinkingId: string): number {
+  for (let i = contents.length - 1; i >= 0; i--) {
+    const item = contents[i];
+    if (item.type === 'thinking' && item.thinkingId === thinkingId) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 export default function App() {
+  const { theme } = useTheme();
+  const isFoundry = theme.startsWith('foundry');
 
   const [sessionId] = useState(() => generateSessionId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -103,6 +117,8 @@ export default function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [currentModel, setCurrentModel] = useState<ModelInfo | undefined>();
+  const [contextWindow, setContextWindow] = useState<number | undefined>();
+  const [cumulativeUsage, setCumulativeUsage] = useState<SessionStats['currentContextTokens'] | undefined>();
   const streamingIdRef = useRef<string | null>(null);
   const skippedHeartbeatRef = useRef<boolean>(false);
   const hasHydratedHistoryRef = useRef<boolean>(false);
@@ -116,6 +132,29 @@ export default function App() {
     }]);
 
     switch (msg.type) {
+      case 'connection': {
+        const connData = msg.data as { connected?: boolean; model?: ModelInfo; contextWindow?: number };
+        if (connData.contextWindow) setContextWindow(connData.contextWindow);
+        if (connData.model) {
+          setCurrentModel(connData.model);
+        }
+        break;
+      }
+
+      case 'state': {
+        const stateData = msg.data as { model?: ModelInfo; contextWindow?: number; contextTokens?: number; isProcessing: boolean; sessionUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number } };
+        if (stateData.model) {
+          setCurrentModel(stateData.model);
+        }
+        if (stateData.contextWindow) setContextWindow(stateData.contextWindow);
+        if (stateData.contextTokens) setCumulativeUsage(stateData.contextTokens);
+        if (stateData.sessionUsage) {
+          // Seed cumulative stats from gateway on connect
+          // Will be overwritten by done messages as conversation progresses
+        }
+        break;
+      }
+
       case 'history': {
         const historyData = msg.data as { messages: Array<{id: string; role: string; content: unknown; timestamp: number; toolCallId?: string; toolName?: string; isError?: boolean; usage?: unknown}> };
         const loadedMessages: ChatMessage[] = [];
@@ -132,7 +171,11 @@ export default function App() {
               return { type: 'text', content: p.text || p.content as string || '' };
             }
             if (p.type === 'thinking') {
-              return { type: 'thinking', content: p.thinking || p.content as string || '' };
+              return {
+                type: 'thinking',
+                content: p.thinking || p.content as string || '',
+                thinkingId: p.id as string | undefined,
+              };
             }
             if (p.type === 'toolCall') {
               return { type: 'tool_call', id: p.id || '', name: p.name || '', args: p.arguments };
@@ -392,7 +435,7 @@ export default function App() {
       }
 
       case 'thinking_delta': {
-        const content = (msg.data as { content: string }).content;
+        const { content, thinkingId, seq } = msg.data as { content: string; thinkingId: string; seq: number };
 
         // Skip heartbeat response content entirely
         const trimmedThinking = content.trim();
@@ -418,7 +461,7 @@ export default function App() {
             return [...prev, {
               id: newId,
               role: 'assistant' as const,
-              content: [{ type: 'thinking' as const, content }],
+              content: [{ type: 'thinking' as const, content, thinkingId, seq }],
               isStreaming: true,
               timestamp: Date.now()
             }];
@@ -428,25 +471,45 @@ export default function App() {
           return prev.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
-            const lastIdx = contents.length - 1;
-            if (lastIdx >= 0 && contents[lastIdx].type === 'thinking') {
-              return { 
-                ...m, 
+            const existingIdx = findThinkingIndex(contents, thinkingId);
+            if (existingIdx >= 0) {
+              const existing = contents[existingIdx] as { type: 'thinking'; content: string; thinkingId?: string; seq?: number };
+              return {
+                ...m,
                 content: [
-                  ...contents.slice(0, lastIdx),
-                  { type: 'thinking' as const, content: (contents[lastIdx] as {type: 'thinking'; content: string}).content + content }
+                  ...contents.slice(0, existingIdx),
+                  { type: 'thinking' as const, content: existing.content + content, thinkingId, seq },
+                  ...contents.slice(existingIdx + 1)
                 ]
               };
             }
-            return { ...m, content: [...contents, { type: 'thinking', content }] };
+            return { ...m, content: [...contents, { type: 'thinking', content, thinkingId, seq }] };
           });
         });
         break;
       }
 
-      case 'thinking_done':
+      case 'thinking_done': {
+        const { content, thinkingId, seq } = msg.data as { content: string; thinkingId: string; seq: number };
+        setMessages(prev => prev.map(m => {
+          if (m.id !== streamingIdRef.current) return m;
+          const contents = Array.isArray(m.content) ? m.content : [];
+          const existingIdx = findThinkingIndex(contents, thinkingId);
+          if (existingIdx < 0) {
+            return { ...m, content: [...contents, { type: 'thinking' as const, content, thinkingId, seq }] };
+          }
+          return {
+            ...m,
+            content: [
+              ...contents.slice(0, existingIdx),
+              { type: 'thinking' as const, content, thinkingId, seq },
+              ...contents.slice(existingIdx + 1)
+            ]
+          };
+        }));
         // Keep processing state during tool calls
         break;
+      }
 
       case 'tool_start': {
         const data = msg.data as { toolCallId: string; toolName: string; args?: unknown };
@@ -574,8 +637,23 @@ export default function App() {
         setIsProcessing(false);
         const doneData = msg.data as {
           finalText?: string;
-          usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
+          usage?: {
+            input: number;
+            output: number;
+            cacheRead: number;
+            cacheWrite: number;
+            total: number;
+            cost?: number;
+            cumulative?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number };
+            contextTokens?: number;
+          };
         } | undefined;
+
+        // Update context tokens from gateway (authoritative)
+        if (doneData?.usage?.contextTokens !== undefined) {
+          setCumulativeUsage(doneData.usage.contextTokens);
+        }
+
         const finalText = doneData?.finalText?.trim();
         const normalizedFinalText = finalText?.replace(/^`+|`+$/g, '');
         let currentId = streamingIdRef.current;
@@ -593,29 +671,18 @@ export default function App() {
               m.id === currentId
                 ? (() => {
                     const currentContent = Array.isArray(m.content) ? m.content : [];
-                    let mergedContent = currentContent;
 
-                    if (normalizedFinalText) {
-                      // Consolidate all text blocks into one to avoid duplicates.
-                      // Tool calls/thinking can split streamed text into multiple blocks;
-                      // done.finalText is the single authoritative text.
-                      const textBlock = { type: 'text' as const, content: normalizedFinalText };
-                      let textInserted = false;
-                      mergedContent = currentContent.map(part => {
-                        if (part.type === 'text') {
-                          if (!textInserted) {
-                            textInserted = true;
-                            return textBlock;
-                          }
-                          return null; // remove duplicate text blocks
-                        }
-                        return part;
-                      }).filter((part): part is MessageContent => part !== null);
-                    }
+                    // If no text was streamed at all, append finalText so the response isn't blank.
+                    // Otherwise leave content as-is — streaming already placed text blocks
+                    // in the right chronological positions alongside tool calls.
+                    const hasTextBlock = currentContent.some(p => p.type === 'text');
+                    const finalContent = (!hasTextBlock && normalizedFinalText)
+                      ? [...currentContent, { type: 'text' as const, content: normalizedFinalText }]
+                      : currentContent;
 
                     return {
                       ...m,
-                      content: mergedContent,
+                      content: finalContent,
                       isStreaming: false,
                       tokenUsage: normalizeTokenUsage(doneData?.usage),
                     };
@@ -739,6 +806,15 @@ export default function App() {
     },
   });
 
+  // Periodic state refresh to keep model info current (e.g. if changed via Telegram)
+  useEffect(() => {
+    if (!isConnected) return;
+    const interval = setInterval(() => {
+      send({ type: 'get_state' });
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [isConnected, send]);
+
 
 
 
@@ -841,9 +917,13 @@ export default function App() {
     .find((m) => m.role === 'assistant' && m.tokenUsage)
     ?.tokenUsage;
 
-  // Status bar stats are based on the latest assistant turn, not cumulative sums.
+  // Use gateway-provided context tokens (from done.contextTokens or state.contextTokens)
+  // Falls back to local computation from latest usage cacheRead + input
+  const currentContextTokens = cumulativeUsage ?? ((latestUsage?.cacheRead ?? 0) + (latestUsage?.input ?? 0));
+
+  // Per-turn stats from latest assistant message
   const sessionStats: SessionStats = {
-    currentContextTokens: (latestUsage?.cacheRead ?? 0) + (latestUsage?.input ?? 0),
+    currentContextTokens,
     lastTurnTokens: latestUsage?.total ?? 0,
     lastInput: latestUsage?.input ?? 0,
     lastOutput: latestUsage?.output ?? 0,
@@ -853,19 +933,15 @@ export default function App() {
   };
 
   // Calculate context usage for compaction warning
-  // Estimate compactThreshold as contextWindow - 16k reserve (typical Claude setup)
-  // Default to 200k context window if unknown
-  const estimatedContextWindow = 200000;
   const reserveTokens = 16384;
-  const compactThreshold = estimatedContextWindow - reserveTokens;
-  const currentContextTokens = sessionStats.currentContextTokens;
+  const compactThreshold = (contextWindow ?? 200000) - reserveTokens;
   const contextPercentage = Math.min(100, Math.round((currentContextTokens / compactThreshold) * 100));
 
   return (
     <div className="relative flex h-full flex-col">
       <StatusBar 
         sessionId={sessionId} 
-        messageCount={messages.length} 
+ 
         isConnected={isConnected}
         gatewayUrl={WS_URL}
         sessionStats={sessionStats}
@@ -873,6 +949,8 @@ export default function App() {
         onToggleDebug={() => setShowDebug(!showDebug)}
         latency={latency}
         contextPercentage={contextPercentage}
+        contextWindow={contextWindow}
+        currentModel={currentModel}
       />
       
       <div className="flex flex-1 overflow-hidden">
@@ -888,6 +966,8 @@ export default function App() {
           models={models}
           currentModel={currentModel}
           disabled={isProcessing}
+          isProcessing={isProcessing}
+          isConnected={isConnected}
         />
         <div className="flex flex-1 flex-col min-w-0">
           <MessageFeed messages={messages} />
@@ -901,6 +981,16 @@ export default function App() {
           />
         </div>
         
+        {isFoundry && (
+          <TelemetryPanel
+            isConnected={isConnected}
+            currentModel={currentModel}
+            sessionStats={sessionStats}
+            contextPercentage={contextPercentage}
+            contextWindow={contextWindow}
+            latency={latency}
+          />
+        )}
         {showDebug && <DebugPanel messages={debugMessages} />}
       </div>
     </div>
