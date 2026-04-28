@@ -90,7 +90,12 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     this.readline.on("line", (line) => this.handleLine(line));
 
     this.process.stderr?.on("data", (data) => {
-      console.error("[Pi stderr]", data.toString());
+      const msg = data.toString().trim();
+      console.error("[Pi stderr]", msg);
+      // Propagate API/provider errors (quota exceeded, plan cancelled, etc.) to listeners
+      if (this.activePromptSource === "user") {
+        this.emit("error", new Error(`Pi error: ${msg}`));
+      }
     });
 
     this.process.on("exit", (code) => {
@@ -262,7 +267,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       const promptId = command.id ?? `prompt-${Date.now()}`;
       const promptPreview = this.previewText(command.message);
 
-      console.log(
+      console.debug(
         `[Pi RPC] Prompt start (${source}) id=${promptId} text="${promptPreview}" queueActive=${this.isPromptActive}`
       );
 
@@ -276,9 +281,6 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
         if (event.type === "message_update") {
           if (event.assistantMessageEvent.type === "text_delta") {
             this.currentText += event.assistantMessageEvent.delta;
-            console.log(
-              `[Pi RPC] Event text_delta (${source}) id=${promptId} delta=${event.assistantMessageEvent.delta.length} total=${this.currentText.length}`
-            );
             this.emit("text", this.currentText);
           } else if (event.assistantMessageEvent.type === "text_done") {
             // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
@@ -288,7 +290,9 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
             );
             this.emit("text", this.currentText);
           } else if (event.assistantMessageEvent.type === "thinking_delta") {
-            console.log(
+            // Suppressed from log file — too noisy during streaming.
+            // Use console.debug for foreground visibility without polluting logs.
+            console.debug(
               `[Pi RPC] Event thinking_delta (${source}) id=${promptId} delta=${event.assistantMessageEvent.delta.length}`
             );
           } else if (event.assistantMessageEvent.type === "thinking_done") {
@@ -300,7 +304,8 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
           );
         } else if (event.type === "tool_execution_update") {
           const partialLength = this.previewUnknown(event.partialResult).length;
-          console.log(
+          // Suppressed from log file — too noisy during streaming.
+          console.debug(
             `[Pi RPC] Event tool_execution_update (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} previewChars=${partialLength}`
           );
         } else if (event.type === "tool_execution_end") {

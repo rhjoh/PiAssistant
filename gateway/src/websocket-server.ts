@@ -3,7 +3,6 @@ import type { BroadcastManager } from "./broadcast.js";
 import type { Client, WSClientMessage, WSServerMessage } from "./types-ws.js";
 import { config } from "./config.js";
 import { ImageStorage } from "./image-storage.js";
-import { PiClientHandler } from "./pi-client-handler.js";
 import type { PiRpcClient } from "./pi-rpc.js";
 import {
   MessageRouter,
@@ -30,17 +29,12 @@ interface WSClient extends Client {
  *
  * All clients connect here and receive the same broadcasts.
  * Telegram is treated as another client via BroadcastManager.
- *
- * Supports two connection types:
- * - Regular clients (macOS app, web): / (root path)
- * - Pi TUI clients: /pi-client (native Pi protocol)
  */
 export class WebSocketGateway {
   private wss: WebSocketServer | null = null;
   private clients = new Map<WebSocket, WSClient>();
   private pingInterval: NodeJS.Timeout | null = null;
   private imageStorage: ImageStorage;
-  private piClientHandler: PiClientHandler;
   private messageRouter: MessageRouter;
 
   constructor(
@@ -49,7 +43,6 @@ export class WebSocketGateway {
     private port: number = 3456
   ) {
     this.imageStorage = new ImageStorage(config.images.dir);
-    this.piClientHandler = new PiClientHandler(broadcastManager, pi);
 
     // Initialize message router with handlers
     this.messageRouter = new MessageRouter([
@@ -76,7 +69,7 @@ export class WebSocketGateway {
       this.wss = new WebSocketServer({
         port: this.port,
         host: "127.0.0.1",
-        // Avoid Bun + ws permessage-deflate CPU spikes with Node-based clients (gateway-bridge).
+        // Avoid Bun + ws permessage-deflate CPU spikes.
         perMessageDeflate: false,
       });
 
@@ -117,14 +110,7 @@ export class WebSocketGateway {
     console.log("[WebSocket] Server stopped");
   }
 
-  private handleConnection(ws: WebSocket, req: { url?: string }): void {
-    // Route Pi TUI clients to the PiClientHandler
-    const pathname = req.url ?? "/";
-    if (pathname === "/pi-client" || pathname.startsWith("/pi-client?")) {
-      this.piClientHandler.handleConnection(ws);
-      return;
-    }
-
+  private handleConnection(ws: WebSocket, _req: { url?: string }): void {
     // Regular client connection
     const clientId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
@@ -180,7 +166,7 @@ export class WebSocketGateway {
           data: {
             connected: true,
             model: stateMessage.data.model,
-            provider: stateMessage.data.provider,
+            contextWindow: stateMessage.data.contextWindow,
           },
         });
       } else {
@@ -231,8 +217,5 @@ export class WebSocketGateway {
       client.isAlive = false;
       ws.ping();
     }
-
-    // Heartbeat Pi TUI clients
-    this.piClientHandler.heartbeat();
   }
 }

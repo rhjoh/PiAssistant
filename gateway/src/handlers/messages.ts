@@ -31,16 +31,13 @@ export class PromptHandler implements MessageHandler {
         message.message,
         client.id
       );
-      
+
       client.send({
         type: "state",
         data: { isProcessing: true },
       });
 
-      const preview = formatPromptForLog(message.message);
-      console.log(
-        `[WebSocket] Prompt sent: "${preview}" (${message.message.length} chars), ${participatingClients.size} clients will receive response`
-      );
+      // Prompt start is logged once by BroadcastManager — see broadcast.ts
     } catch (err) {
       client.send({
         type: "error",
@@ -344,11 +341,8 @@ export class PingHandler implements MessageHandler {
 
     const latencyMs =
       typeof message.timestamp === "number" ? Math.max(0, Date.now() - message.timestamp) : null;
-    if (latencyMs !== null) {
-      console.log(`[WebSocket] Received ping from ${client.id} (${latencyMs}ms RTT)`);
-    } else {
-      console.log(`[WebSocket] Received ping from ${client.id}`);
-    }
+    // Ping logging suppressed — too noisy for the log file.
+    // Use personalos status or the Web UI debug panel for connection diagnostics.
 
     client.send({
       type: "pong",
@@ -455,13 +449,14 @@ export class GetModelsHandler implements MessageHandler {
     try {
       const models = await this.broadcastManager.getAvailableModels();
       const state = await this.broadcastManager.getState();
-      const stateData = state.data as { model?: { provider: string; id: string; name: string } } | undefined;
+      // state.data.model is now a WSModelInfo object { id, provider, name }
+      const currentModel = state.data.model;
       
       client.send({
         type: "models",
         data: {
           models,
-          current: stateData?.model,
+          current: currentModel,
         },
       });
     } catch (err) {
@@ -485,21 +480,25 @@ export class SwitchModelHandler implements MessageHandler {
     if (message.type !== "switch_model") return;
 
     const { provider, modelId } = message;
-    
+
     try {
       const result = await this.broadcastManager.switchModel(provider, modelId);
-      
-      client.send({
-        type: "model_switched",
-        data: result,
-      });
+
+      // On success, switchModel() already broadcast model_switched to all clients.
+      // Only send error response directly to the requesting client.
+      if (!result.success) {
+        client.send({
+          type: "model_switched",
+          data: result,
+        });
+      }
     } catch (err) {
       console.error("[WebSocket] Failed to switch model:", err);
       client.send({
         type: "model_switched",
-        data: { 
-          success: false, 
-          error: err instanceof Error ? err.message : "Failed to switch model" 
+        data: {
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to switch model",
         },
       });
     }

@@ -26,8 +26,8 @@ export type WSServerMessage =
   | { type: "connection"; data: WSConnectionData }
   | { type: "user_message"; data: { content: string; source: string } }
   | { type: "text_delta"; data: { content: string } }
-  | { type: "thinking_delta"; data: { content: string } }
-  | { type: "thinking_done"; data: { content: string } }
+  | { type: "thinking_delta"; data: { thinkingId: string; content: string; seq: number } }
+  | { type: "thinking_done"; data: { thinkingId: string; content: string; seq: number } }
   | {
       type: "tool_start";
       data: { toolCallId: string; toolName: string; args?: unknown; label: string };
@@ -67,15 +67,17 @@ export interface WSModelInfo {
 
 export interface WSConnectionData {
   connected: true;
-  model?: string;
-  provider?: string;
+  model?: WSModelInfo;
+  contextWindow?: number;
 }
 
 export interface WSStateData {
-  model?: string;
-  provider?: string;
+  model?: WSModelInfo;
+  contextWindow?: number;
   contextTokens?: number;
   isProcessing: boolean;
+  /** Cumulative session token usage */
+  sessionUsage?: TokenUsage;
 }
 
 export interface TokenUsage {
@@ -85,54 +87,18 @@ export interface TokenUsage {
   cacheWrite: number;
   total: number;
   cost?: number;
+  /** Cumulative session totals (present in done message, includes all turns) */
+  cumulative?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+    cost?: number;
+  };
+  /** Current context size estimate (cacheRead + input from this turn) */
+  contextTokens?: number;
 }
-
-/**
- * Dedicated /pi-client native stream contract.
- * This is intentionally separate from generic WSServerMessage events.
- */
-export type PiClientNativeEvent =
-  | { type: "turn_start"; turnId: string; seq: number }
-  | { type: "text_delta"; turnId: string; seq: number; text: string }
-  | { type: "text_done"; turnId: string; seq: number; text: string }
-  | { type: "thinking"; turnId: string; seq: number; text: string }
-  | { type: "thinking_done"; turnId: string; seq: number }
-  | {
-      type: "tool_execution_start";
-      turnId: string;
-      seq: number;
-      toolCallId: string;
-      toolName: string;
-      args: Record<string, unknown>;
-    }
-  | {
-      type: "tool_execution_update";
-      turnId: string;
-      seq: number;
-      toolCallId: string;
-      toolName: string;
-      args: Record<string, unknown>;
-      partialResult: unknown;
-    }
-  | {
-      type: "tool_execution_end";
-      turnId: string;
-      seq: number;
-      toolCallId: string;
-      toolName: string;
-      result: unknown;
-      isError?: boolean;
-      args?: Record<string, unknown>;
-    }
-  | { type: "image"; turnId: string; seq: number; data: string; mimeType: string }
-  | { type: "done"; turnId: string; seq: number }
-  | {
-      type: "turn_end";
-      turnId: string;
-      seq: number;
-      stopReason: "stop" | "toolUse" | "error" | "aborted";
-    }
-  | { type: "error"; turnId: string; seq: number; message: string };
 
 /**
  * Client interface for broadcasting - abstracts Telegram and WebSocket clients
