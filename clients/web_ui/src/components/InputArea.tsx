@@ -13,14 +13,13 @@ interface InputAreaProps {
 
 export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef }: InputAreaProps) {
   const { theme } = useTheme();
+  const isFoundry = theme.startsWith('foundry');
+
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [showCommands, setShowCommands] = useState(false);
   const [pastedImages, setPastedImages] = useState<UploadImage[]>([]);
 
-  const isOps = theme === 'ops';
-
-  // Extract query after slash for command filtering
   const commandQuery = useMemo(() => {
     if (!showCommands) return '';
     const match = input.match(/^\/(.+)$/);
@@ -29,8 +28,6 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const hasSlashArgs = /^\/\S+\s+.+/.test(input.trim());
-
-    // Don't send if slash menu is open (let menu handle enter/escape)
     if (showCommands && !hasSlashArgs && (e.key === 'Enter' || e.key === 'Escape' || e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       return;
     }
@@ -43,7 +40,6 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setInput(value);
-    // Show commands when input starts with /
     setShowCommands(value.startsWith('/'));
   };
 
@@ -60,12 +56,10 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if ((!trimmed && pastedImages.length === 0) || disabled) return;
-
     onSend(trimmed, pastedImages.length > 0 ? pastedImages : undefined);
     setInput('');
     setPastedImages([]);
     setShowCommands(false);
-    
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.focus();
@@ -79,7 +73,6 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-
     for (const item of Array.from(items)) {
       if (item.type.startsWith('image/')) {
         e.preventDefault();
@@ -106,11 +99,16 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
     setPastedImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  // Slack-style input container
-  const inputContainerStyle = isOps ? {
+  const inputContainerStyle = isFoundry ? {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
     gap: '8px',
+    background: 'var(--bg-input)',
+    border: `1px solid ${isFocused ? 'var(--border-color-strong)' : 'var(--border-color)'}`,
+    borderRadius: '0',
+    padding: '6px 10px',
+    boxShadow: 'none',
+    transition: 'all 0.1s ease',
   } : {
     display: 'flex',
     alignItems: 'flex-end',
@@ -127,27 +125,12 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
     <div
       style={{
         borderTop: '1px solid var(--border-color)',
-        background: isOps ? 'var(--bg-secondary)' : 'var(--bg-primary)',
-        padding: isOps ? '12px 40px' : '12px 40px',
+        background: isFoundry ? 'var(--statusbar-bg)' : 'var(--bg-primary)',
+        padding: isFoundry ? '10px 40px' : '12px 40px',
       }}
     >
       <div style={{ maxWidth: '900px', margin: '0 auto' }}>
         <div style={inputContainerStyle}>
-          {/* Prompt indicator - Ops only */}
-          {isOps && (
-            <div
-              style={{
-                fontSize: '14px',
-                color: 'var(--accent-primary)',
-                paddingTop: '6px',
-                fontFamily: 'var(--font-primary)',
-              }}
-            >
-              {'>'}
-            </div>
-          )}
-
-          {/* Input container with slash menu */}
           <div style={{ flex: 1, position: 'relative' }}>
             {showCommands && (
               <SlashCommandMenu
@@ -164,26 +147,26 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               onPaste={handlePaste}
-              placeholder={isProcessing 
-                ? (isOps ? 'TYPE TO STEER OR /abort...' : 'Type to steer, or press Esc to abort...')
-                : (isOps ? 'ENTER COMMAND...' : 'Message Pi...')
+              placeholder={isProcessing
+                ? (isFoundry ? 'TYPE TO STEER OR /ABORT' : 'Type to steer, or press Esc to abort...')
+                : (isFoundry ? 'ENTER COMMAND' : 'Message Pi...')
               }
               disabled={disabled}
               rows={1}
               style={{
                 width: '100%',
-                minHeight: isOps ? '32px' : '22px',
+                minHeight: '22px',
                 maxHeight: '200px',
                 background: 'transparent',
                 border: 'none',
                 outline: 'none',
-                fontSize: isOps ? '14px' : '14px',
+                fontSize: isFoundry ? '13px' : '14px',
                 color: 'var(--text-primary)',
                 caretColor: 'var(--accent-primary)',
                 fontFamily: 'var(--font-primary)',
                 lineHeight: '1.4',
                 resize: 'none',
-                padding: isOps ? '6px 0' : '2px 2px',
+                padding: isFoundry ? '4px 0' : '2px 2px',
                 fontWeight: 400,
               }}
               onInput={(e) => {
@@ -194,7 +177,6 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
             />
           </div>
 
-          {/* Right side: spinner or button */}
           {isProcessing ? (
             <button
               onClick={handleAbort}
@@ -202,20 +184,19 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: isOps ? '8px' : '6px',
-                width: isOps ? 'auto' : 'auto',
-                height: isOps ? '36px' : '32px',
+                gap: '8px',
+                height: '36px',
                 background: 'transparent',
-                border: isOps ? '1px solid var(--accent-danger)' : '1px solid var(--border-color)',
-                borderRadius: 'var(--radius-md)',
-                color: isOps ? 'var(--accent-danger)' : 'var(--text-secondary)',
+                border: '1px solid var(--accent-danger)',
+                borderRadius: isFoundry ? '0' : 'var(--radius-md)',
+                color: isFoundry ? 'var(--accent-danger)' : 'var(--text-secondary)',
                 cursor: 'pointer',
                 transition: 'all 0.15s',
-                padding: isOps ? '0 12px' : '0 10px',
+                padding: '0 12px',
                 fontFamily: 'var(--font-primary)',
-                fontSize: isOps ? '11px' : '12px',
-                letterSpacing: isOps ? '0.1em' : '0',
-                textTransform: isOps ? 'uppercase' : 'none',
+                fontSize: isFoundry ? '10px' : '12px',
+                letterSpacing: isFoundry ? '0.1em' : '0',
+                textTransform: isFoundry ? 'uppercase' : 'none',
               }}
               title="Abort running request"
               onMouseEnter={(e) => {
@@ -224,7 +205,7 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.color = isOps ? 'var(--accent-danger)' : 'var(--text-secondary)';
+                e.currentTarget.style.color = isFoundry ? 'var(--accent-danger)' : 'var(--text-secondary)';
               }}
             >
               <div style={{
@@ -238,7 +219,7 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="6" y="6" width="12" height="12" />
               </svg>
-              {isOps ? 'ABORT' : 'Abort'}
+              {isFoundry ? 'ABORT' : 'Abort'}
             </button>
           ) : (
             <button
@@ -249,33 +230,33 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '6px',
-                background: (!input.trim() && pastedImages.length === 0) || disabled 
+                background: ((!input.trim() && pastedImages.length === 0) || disabled)
                   ? 'transparent'
-                  : isOps 
+                  : isFoundry
                     ? 'transparent'
                     : 'var(--accent-primary)',
-                border: isOps 
+                border: isFoundry
                   ? `1px solid ${((!input.trim() && pastedImages.length === 0) || disabled) ? 'var(--border-color)' : 'var(--accent-primary)'}`
                   : 'none',
-                padding: isOps ? '10px 16px' : '8px',
-                fontSize: isOps ? '11px' : '13px',
-                fontWeight: isOps ? 400 : 600,
-                textTransform: isOps ? 'uppercase' : 'none',
-                letterSpacing: isOps ? '0.1em' : '0',
+                padding: isFoundry ? '10px 16px' : '8px',
+                fontSize: isFoundry ? '10px' : '13px',
+                fontWeight: isFoundry ? 400 : 600,
+                textTransform: isFoundry ? 'uppercase' : 'none',
+                letterSpacing: isFoundry ? '0.1em' : '0',
                 color: ((!input.trim() && pastedImages.length === 0) || disabled)
                   ? 'var(--text-muted)'
-                  : isOps 
+                  : isFoundry
                     ? 'var(--accent-primary)'
                     : 'var(--text-inverse)',
                 cursor: ((!input.trim() && pastedImages.length === 0) || disabled) ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-primary)',
-                borderRadius: isOps ? 'var(--radius-md)' : 'var(--radius-md)',
+                borderRadius: isFoundry ? '0' : 'var(--radius-md)',
                 transition: 'all var(--transition-fast)',
-                minWidth: isOps ? 'auto' : '32px',
-                height: isOps ? 'auto' : '32px',
+                minWidth: '32px',
+                height: '32px',
               }}
             >
-              {isOps ? 'TRANSMIT' : (
+              {isFoundry ? 'TRANSMIT' : (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="22" y1="2" x2="11" y2="13" />
                   <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -285,17 +266,11 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
           )}
         </div>
 
-        {/* Pasted images preview */}
         {pastedImages.length > 0 && (
-          <div style={{ 
-            display: 'flex', 
-            gap: '8px', 
-            marginTop: '8px',
-            flexWrap: 'wrap'
-          }}>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
             {pastedImages.map((img, idx) => (
               <div key={idx} style={{ position: 'relative' }}>
-                <img 
+                <img
                   src={img.dataUrl}
                   alt={`Pasted ${idx + 1}`}
                   style={{
@@ -332,24 +307,23 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
           </div>
         )}
 
-        {/* Status line */}
         <div
           style={{
-            marginTop: isOps ? '6px' : '8px',
-            fontSize: isOps ? '10px' : '12px',
-            letterSpacing: isOps ? '0.12em' : '0',
-            textTransform: isOps ? 'uppercase' : 'none',
+            marginTop: isFoundry ? '6px' : '8px',
+            fontSize: isFoundry ? '9px' : '12px',
+            letterSpacing: isFoundry ? '0.12em' : '0',
+            textTransform: isFoundry ? 'uppercase' : 'none',
             color: 'var(--text-muted)',
             fontFamily: 'var(--font-primary)',
-            fontWeight: isOps ? 400 : 450,
+            fontWeight: isFoundry ? 400 : 450,
           }}
         >
           {disabled ? (
-            isOps ? 'CHANNEL CLOSED // RECONNECTING...' : 'Reconnecting to gateway...'
+            isFoundry ? 'CONN DROP // RECONNECTING' : 'Reconnecting to gateway...'
           ) : isProcessing ? (
-            isOps ? 'PROCESSING // TYPE TO STEER // ESC TO ABORT' : 'Processing... Press Esc to stop'
+            isFoundry ? 'PROCESSING // TYPE TO STEER // ESC TO ABORT' : 'Processing... Press Esc to stop'
           ) : (
-            isOps ? 'CHANNEL OPEN // ENTER TO TRANSMIT // PASTE IMAGE' : 'Enter to send · Shift+Enter for new line · Paste image'
+            isFoundry ? 'READY // ENTER TO TRANSMIT // PASTE IMAGE' : 'Enter to send · Shift+Enter for new line · Paste image'
           )}
         </div>
       </div>

@@ -1,6 +1,6 @@
 export type MessageContent = 
   | { type: 'text'; content: string }
-  | { type: 'thinking'; content: string }
+  | { type: 'thinking'; content: string; thinkingId?: string; seq?: number }
   | { type: 'tool_call'; id: string; name: string; args?: Record<string, unknown> }
   | { type: 'tool_result'; toolCallId: string; content: string; isError?: boolean }
   | { type: 'image'; url: string; alt?: string };

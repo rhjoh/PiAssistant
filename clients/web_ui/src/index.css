@@ -67,120 +67,304 @@
   --transition-medium: 0.2s ease;
 }
 
-/* SaaS Modern Theme - Slack-inspired */
-[data-theme="saas"] {
-  /* Typography - Clean sans-serif like Slack */
-  --font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-secondary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-size-base: 15px;
-  --line-height-base: 1.6;
-  
-  /* Colors - Slack-inspired light theme */
-  --bg-primary: #f3f5f8;            /* Softer canvas */
-  --bg-secondary: #f8f9fb;          /* Message surfaces/panels */
-  --bg-elevated: #ffffff;
-  --bg-input: #fbfcfe;              /* Input surface */
-  --bg-hover: #f1f4f8;
-  --border-color: #e2e6ec;
-  --border-color-strong: #cfd6df;
-  --text-primary: #1d1c1d;          /* Slack's near-black text */
-  --text-secondary: #616061;        /* Slack's secondary gray */
-  --text-muted: #a0a0a0;
-  --text-inverse: #ffffff;
-  
-  /* Accents - Slack Purple */
-  --accent-primary: #611f69;        /* Slack purple */
-  --accent-primary-dim: rgba(97, 31, 105, 0.08);
-  --accent-secondary: #e8912d;      /* Slack orange/gold */
-  --accent-danger: #e01e5a;         /* Slack red */
-  --accent-info: #36c5f0;           /* Slack blue */
-  --accent-success: #2eb67d;        /* Slack green */
-  
+/* Palantir grid background pattern */
+
+/* Palantir tag/pill style for role labels */
+/* Palantir panel — bordered container with no radius */
+/* Palantir protocol header — for tool blocks */
+/* Palantir data row — alternating subtle backgrounds */
+/* Palantir accent bar */
+/* Palantir status divider */
+/* Palantir section header */
+/* ========================================
+   FOUNDRY THEME - Industrial Command Console
+   ======================================== */
+[data-theme="foundry"] {
+  --font-primary: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
+  --font-secondary: 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-size-base: 13px;
+  --line-height-base: 1.5;
+
+  /* Colors - Coal, steel, forge amber */
+  --bg-primary: #0a0a0c;
+  --bg-secondary: #0e0e11;
+  --bg-elevated: #141418;
+  --bg-input: #0c0c0f;
+  --bg-hover: #1a1a1f;
+  --bg-panel: #08080a;
+  --border-color: #22222a;
+  --border-color-strong: #33333d;
+  --grid-line: #111116;
+  --text-primary: #d4d4d8;
+  --text-secondary: #6b6b75;
+  --text-muted: #46464f;
+  --text-inverse: #0a0a0c;
+
+  /* Accents - Forge amber/orange */
+  --accent-primary: #e8a838;
+  --accent-primary-dim: rgba(232, 168, 56, 0.08);
+  --accent-secondary: #78716c;
+  --accent-danger: #c23b22;
+  --accent-success: #2d8a4e;
+  --accent-info: #3d8fb5;
+  --accent-amber: #b45309;
+
   /* Message Colors */
-  --ai-text: #1d1c1d;
-  --ai-bg: #ffffff;
-  --user-text: #1d1c1d;
-  --user-bg: #f8f8f8;
-  --user-border: #e8e8e8;
-  
-  /* Spacing - Slack uses generous rounding */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  
-  /* Shadows - Subtle, clean */
-  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 1px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.12);
-  
+  --ai-text: #8a8a95;
+  --ai-bg: #0e0e11;
+  --user-text: #e4e4e7;
+  --user-bg: rgba(232, 168, 56, 0.03);
+  --user-border: rgba(232, 168, 56, 0.12);
+
+  /* Spacing - Zero radius, sharp edges */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+
+  /* Shadows - Heavy, industrial */
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.7);
+
   /* Status Bar */
-  --statusbar-bg: #ffffff;
-  --statusbar-border: #e8e8e8;
-  
+  --statusbar-bg: #060608;
+  --statusbar-border: #22222a;
+
   /* Scrollbar */
   --scrollbar-bg: transparent;
-  --scrollbar-thumb: #c1c1c1;
+  --scrollbar-thumb: #1e1e24;
 }
 
-/* Llama Theme - Inspired by llama.cpp UI */
-[data-theme="llama"] {
-  /* Typography - Clean sans-serif */
-  --font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-secondary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-size-base: 15px;
-  --line-height-base: 1.65;
+/* ========================================
+   FOUNDRY LIGHT - Workshop Daylight
+   ======================================== */
+[data-theme="foundry-light"] {
+  --font-primary: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
+  --font-secondary: 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-size-base: 13px;
+  --line-height-base: 1.5;
 
-  /* Colors - llama.cpp inspired dark neutrals */
-  --bg-primary: #1b1f20;
-  --bg-secondary: #222627;
-  --bg-elevated: #282c2d;
-  --bg-input: #242829;
-  --bg-hover: #2e3233;
-  --border-color: rgba(255, 255, 255, 0.07);
-  --border-color-strong: rgba(255, 255, 255, 0.14);
-  --text-primary: #d4d4d8;
-  --text-secondary: #71717a;
-  --text-muted: #3f3f46;
-  --text-inverse: #1b1f20;
+  /* Colors - Warm workshop daylight */
+  --bg-primary: #f0ece6;
+  --bg-secondary: #e8e3db;
+  --bg-elevated: #ddd7cf;
+  --bg-input: #e5dfd8;
+  --bg-hover: #d8d2ca;
+  --bg-panel: #e0dad2;
+  --border-color: #c9c3bb;
+  --border-color-strong: #b5afa7;
+  --grid-line: #e5e0da;
+  --text-primary: #2b2622;
+  --text-secondary: #6b6560;
+  --text-muted: #9a948e;
+  --text-inverse: #f0ece6;
 
-  /* Accents - llama orange */
-  --accent-primary: #ff8232;
-  --accent-primary-dim: rgba(255, 130, 50, 0.08);
-  --accent-secondary: #fbbf24;
-  --accent-danger: #ef4444;
-  --accent-success: #22c55e;
-  --accent-info: #60a5fa;
+  /* Accents - Copper/bronze */
+  --accent-primary: #b87333;
+  --accent-primary-dim: rgba(184, 115, 51, 0.08);
+  --accent-secondary: #78716c;
+  --accent-danger: #b93d2a;
+  --accent-success: #3a7a4a;
+  --accent-info: #5a8fa8;
+  --accent-amber: #a0522d;
 
   /* Message Colors */
-  --ai-text: #a1a1aa;
-  --ai-bg: transparent;
-  --user-text: #e4e4e7;
-  --user-bg: rgba(255, 130, 50, 0.05);
-  --user-border: rgba(255, 130, 50, 0.12);
+  --ai-text: #5a544e;
+  --ai-bg: #e8e3db;
+  --user-text: #2b2622;
+  --user-bg: rgba(184, 115, 51, 0.04);
+  --user-border: rgba(184, 115, 51, 0.10);
 
-  /* Spacing - Generous rounding like llama.cpp */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* Spacing - Zero radius, sharp edges */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
 
-  /* Shadows - Subtle, layered */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.4);
+  /* Shadows - Subtle for light */
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.10);
 
   /* Status Bar */
-  --statusbar-bg: #161a1b;
-  --statusbar-border: rgba(255, 255, 255, 0.05);
+  --statusbar-bg: #e0dad2;
+  --statusbar-border: #c9c3bb;
 
   /* Scrollbar */
   --scrollbar-bg: transparent;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb: #c9c3bb;
+}
 
-  /* Animations */
-  --transition-fast: 0.15s ease;
-  --transition-medium: 0.2s ease;
+/* Foundry rivet pattern on panels */
+[data-theme="foundry"] .foundry-panel,
+[data-theme="foundry-light"] .foundry-panel {
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  position: relative;
+}
+
+[data-theme="foundry"] .foundry-panel::before,
+[data-theme="foundry-light"] .foundry-panel::before,
+[data-theme="foundry"] .foundry-panel::after,
+[data-theme="foundry-light"] .foundry-panel::after {
+  content: '';
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--border-color-strong);
+  border-radius: 0;
+}
+
+[data-theme="foundry"] .foundry-panel::before,
+[data-theme="foundry-light"] .foundry-panel::before { top: 4px; left: 4px; }
+[data-theme="foundry"] .foundry-panel::after,
+[data-theme="foundry-light"] .foundry-panel::after { top: 4px; right: 4px; }
+
+/* Foundry work order header */
+[data-theme="foundry"] .foundry-work-order,
+[data-theme="foundry-light"] .foundry-work-order {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-family: var(--font-primary);
+}
+
+/* Foundry accent bar - heavy industrial */
+[data-theme="foundry"] .foundry-bar-user,
+[data-theme="foundry-light"] .foundry-bar-user {
+  border-left: 4px solid var(--accent-primary);
+}
+
+[data-theme="foundry"] .foundry-bar-ai,
+[data-theme="foundry-light"] .foundry-bar-ai {
+  border-left: 4px solid var(--border-color-strong);
+}
+
+/* Foundry gauge track */
+[data-theme="foundry"] .foundry-gauge-track,
+[data-theme="foundry-light"] .foundry-gauge-track {
+  height: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  position: relative;
+  overflow: hidden;
+}
+
+[data-theme="foundry"] .foundry-gauge-fill,
+[data-theme="foundry-light"] .foundry-gauge-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 0.3s ease;
+  opacity: 0.7;
+}
+
+[data-theme="foundry"] .foundry-gauge-fill.warn,
+[data-theme="foundry-light"] .foundry-gauge-fill.warn {
+  background: var(--accent-secondary);
+  opacity: 0.8;
+}
+
+[data-theme="foundry"] .foundry-gauge-fill.critical,
+[data-theme="foundry-light"] .foundry-gauge-fill.critical {
+  background: var(--accent-danger);
+  opacity: 0.9;
+}
+
+/* Foundry readout - 7-segment style numbers */
+[data-theme="foundry"] .foundry-readout,
+[data-theme="foundry-light"] .foundry-readout {
+  font-family: var(--font-primary);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--accent-primary);
+  line-height: 1;
+}
+
+/* Foundry section label */
+[data-theme="foundry"] .foundry-label,
+[data-theme="foundry-light"] .foundry-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-family: var(--font-primary);
+}
+
+/* Foundry status lamp */
+[data-theme="foundry"] .foundry-lamp,
+[data-theme="foundry-light"] .foundry-lamp {
+  width: 8px;
+  height: 8px;
+  background: var(--text-muted);
+  border-radius: 0;
+  position: relative;
+}
+
+[data-theme="foundry"] .foundry-lamp.on,
+[data-theme="foundry-light"] .foundry-lamp.on {
+  background: var(--accent-success);
+  box-shadow: 0 0 6px rgba(45, 138, 78, 0.4);
+}
+
+[data-theme="foundry"] .foundry-lamp.warn,
+[data-theme="foundry-light"] .foundry-lamp.warn {
+  background: var(--accent-primary);
+  box-shadow: 0 0 6px rgba(232, 168, 56, 0.4);
+}
+
+[data-theme="foundry"] .foundry-lamp.critical,
+[data-theme="foundry-light"] .foundry-lamp.critical {
+  background: var(--accent-danger);
+  box-shadow: 0 0 6px rgba(194, 59, 34, 0.4);
+}
+
+/* Foundry transmit button - heavy industrial */
+[data-theme="foundry"] .foundry-transmit,
+[data-theme="foundry-light"] .foundry-transmit {
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+  border: none;
+  font-family: var(--font-primary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: all 0.08s ease;
+}
+
+[data-theme="foundry"] .foundry-transmit:hover,
+[data-theme="foundry-light"] .foundry-transmit:hover {
+  background: #f0b84a;
+}
+
+[data-theme="foundry"] .foundry-transmit:active,
+[data-theme="foundry-light"] .foundry-transmit:active {
+  background: #d49a2e;
+}
+
+[data-theme="foundry"] .foundry-transmit:disabled,
+[data-theme="foundry-light"] .foundry-transmit:disabled {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Foundry processing heat glow */
+[data-theme="foundry"] .foundry-heating,
+[data-theme="foundry-light"] .foundry-heating {
+  animation: forge-heat 1.5s ease-in-out infinite;
 }
 
 /* SaaS theme stays light - no dark mode variant */
@@ -235,21 +419,6 @@
    THEME-SPECIFIC COMPONENTS
    ======================================== */
 
-/* Glow effects - Ops theme only */
-[data-theme="ops"] .glow-green {
-  box-shadow: 0 0 8px #4ade8066;
-}
-
-[data-theme="ops"] .text-glow-green {
-  text-shadow: 0 0 8px #4ade8066;
-}
-
-[data-theme="saas"] .glow-green,
-[data-theme="saas"] .text-glow-green {
-  box-shadow: none;
-  text-shadow: none;
-}
-
 /* Animations */
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -277,6 +446,51 @@
   animation: spin 0.8s linear infinite;
 }
 
+@keyframes sidebar-pulse {
+  0%, 100% { transform: scaleX(0.3); opacity: 0.4; }
+  50% { transform: scaleX(1); opacity: 0.8; }
+}
+
+@keyframes forge-heat {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
+  50% { box-shadow: inset 0 0 20px rgba(232, 168, 56, 0.06); }
+}
+
+@keyframes forge-flicker {
+  0%, 100% { opacity: 0.6; }
+  25% { opacity: 0.3; }
+  50% { opacity: 0.9; }
+  75% { opacity: 0.5; }
+}
+
+@keyframes thinking-bars {
+  0%, 100% { transform: scaleY(0.3); opacity: 0.3; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+.thinking-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 14px;
+}
+
+.thinking-bars span {
+  display: inline-block;
+  width: 3px;
+  height: 100%;
+  background: var(--accent-primary);
+  animation: thinking-bars 1s ease-in-out infinite;
+}
+
+.thinking-bars span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-bars span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
 /* Focus styles */
 .focus-ring:focus {
   outline: none;
@@ -289,4 +503,39 @@
               color var(--transition-medium),
               border-color var(--transition-medium),
               box-shadow var(--transition-medium);
+}
+
+/* ========================================
+   SCROLLBAR AUTO-HIDE
+   ======================================== */
+.scrollbar-hide {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  width: 6px;
+  height: 0;
+}
+
+.scrollbar-hide::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-hide::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.scrollbar-hide:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+/* Force text wrap — no horizontal overflow */
+.text-wrap-hard {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
 }

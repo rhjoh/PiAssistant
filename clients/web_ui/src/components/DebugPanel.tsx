@@ -73,9 +73,9 @@ export function DebugPanel({ messages }: DebugPanelProps) {
       </div>
 
       <div
+        className="scrollbar-hide"
         style={{
           flex: 1,
-          overflowY: 'auto',
           padding: '8px 0',
         }}
       >
