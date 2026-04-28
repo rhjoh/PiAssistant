@@ -266,7 +266,7 @@ class ChatViewModel: ObservableObject {
 }
 
 extension ChatViewModel: ChatServiceDelegate {
-    func chatServiceDidConnect(_ service: ChatService, model: String?) {
+    func chatServiceDidConnect(_ service: ChatService, model: WSModelInfo?) {
         connectionState = .connected(model: model)
     }
     
@@ -543,7 +543,7 @@ extension ChatViewModel: ChatServiceDelegate {
         return true
     }
     
-    func chatService(_ service: ChatService, didReceiveState model: String?, provider: String?, contextTokens: Int?) {
+    func chatService(_ service: ChatService, didReceiveState model: WSModelInfo?, contextTokens: Int?) {
         // Defer to next run loop to avoid state modification during layout
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -553,10 +553,8 @@ extension ChatViewModel: ChatServiceDelegate {
             
             var lines = [String]()
             
-            if let model = model, let provider = provider {
-                lines.append("**Model:** \(provider)/\(model)")
-            } else if let model = model {
-                lines.append("**Model:** \(model)")
+            if let model = model {
+                lines.append("**Model:** \(model.provider)/\(model.id) (\(model.name))")
             }
             
             if let tokens = contextTokens {
