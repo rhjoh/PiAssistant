@@ -46,7 +46,7 @@ class StatusCommand implements Command {
       const fmt = (n: number | undefined) => n?.toLocaleString() ?? "(n/a)";
       return [
         "Gateway status:",
-        `Model: ${s.provider && s.model ? `${s.provider}/${s.model}` : "(unknown)"}`,
+        `Model: ${s.model ? `${s.model.provider}/${s.model.id} (${s.model.name})` : "(unknown)"}`,
         `Processing: ${s.isProcessing ? "yes" : "no"}`,
         `Context tokens: ${fmt(s.contextTokens)}`,
       ].join("\n");

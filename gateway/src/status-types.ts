@@ -16,13 +16,14 @@ export interface FileServerStatus {
   };
   session: {
     path: string;
-    model?: string;
-    provider?: string;
+    model?: { id: string; name: string; provider: string; contextWindow?: number };
+    contextTokens?: number;
+    contextWindow?: number;
   };
 }
 
 export interface StatusProvider {
-  getStatus(): FileServerStatus;
+  getStatus(): Promise<FileServerStatus> | FileServerStatus;
   recordHeartbeat(): void;
   recordMemoryWatcherRun(): void;
 }

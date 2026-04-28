@@ -45,6 +45,11 @@ Commands:
   restart    Restart background gateway
              --webui       Force start Web UI on restart
              --no-webui    Force disable Web UI on restart
+  webui      Manage Web UI independently
+             start     Start Web UI dev server
+             stop      Stop Web UI dev server
+             status    Show Web UI status
+             restart   Restart Web UI dev server
   status     Show gateway process status
   logs       Show recent logs
   logs -f    Follow logs
@@ -119,6 +124,10 @@ async function cleanupStalePidFile(): Promise<void> {
   }
 }
 
+async function writePidState(state: PidState): Promise<void> {
+  await writeFile(config.runtime.pidFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
 interface StartOptions {
   webui: boolean;
 }
@@ -155,6 +164,109 @@ function parseRestartOptions(args: string[]): RestartOptions {
   return options;
 }
 
+function getWebuiArgs(): { command: string; prefixArgs: string[]; args: string[] } {
+  const npm = resolveNpmCommand();
+  return {
+    command: npm.command,
+    prefixArgs: npm.prefixArgs,
+    args: [
+      ...npm.prefixArgs,
+      "run",
+      "dev",
+      "--",
+      "--host",
+      "localhost",
+      "--port",
+      "5173",
+      "--strictPort",
+    ],
+  };
+}
+
+async function startWebui(): Promise<PidState["webui"]> {
+  const state = await readPidState();
+  if (state?.webui && isPidRunning(state.webui.pid)) {
+    console.log(`webui already running (pid ${state.webui.pid})`);
+    return state.webui;
+  }
+
+  const webuiRoot = resolve(gatewayRoot, "..", "clients", "web_ui");
+  const npm = resolveNpmCommand();
+  const webuiArgs = [
+    ...npm.prefixArgs,
+    "run",
+    "dev",
+    "--",
+    "--host",
+    "localhost",
+    "--port",
+    "5173",
+    "--strictPort",
+  ];
+  const webui = spawn(npm.command, webuiArgs, {
+    cwd: webuiRoot,
+    detached: true,
+    stdio: "ignore",
+    env: process.env,
+  });
+  webui.on("error", (err) => {
+    console.error(`[personalos] Failed to start webui process: ${err.message}`);
+  });
+  webui.unref();
+
+  const webuiState: PidState["webui"] = {
+    pid: webui.pid ?? 0,
+    command: `${npm.command} ${webuiArgs.join(" ")}`,
+    url: "http://localhost:5173",
+  };
+
+  // Update or create pid state
+  const newState: PidState = state
+    ? { ...state, webui: webuiState }
+    : {
+        pid: 0,
+        startedAt: new Date().toISOString(),
+        command: "webui-only",
+        webui: webuiState,
+      };
+  await writePidState(newState);
+
+  console.log(`webui started (pid ${webuiState.pid})`);
+  console.log(`webui url: ${webuiState.url}`);
+  return webuiState;
+}
+
+async function stopWebui(): Promise<void> {
+  const state = await readPidState();
+  if (!state?.webui) {
+    console.log("webui is not running");
+    return;
+  }
+
+  const pid = state.webui.pid;
+  if (!isPidRunning(pid)) {
+    console.log("webui is not running (stale pid)");
+    const { webui: _, ...rest } = state;
+    await writePidState(rest as PidState);
+    return;
+  }
+
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; i < 20; i++) {
+    if (!isPidRunning(pid)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  if (isPidRunning(pid)) {
+    console.warn(`webui process ${pid} still running after SIGTERM`);
+  } else {
+    console.log(`webui stopped (pid ${pid})`);
+  }
+
+  const { webui: _, ...rest } = state;
+  await writePidState(rest as PidState);
+}
+
 async function startCommand(args: string[]): Promise<void> {
   const options = parseStartOptions(args);
   await ensureRuntimeDirs();
@@ -180,52 +292,19 @@ async function startCommand(args: string[]): Promise<void> {
   });
   child.unref();
 
-  let webuiState: PidState["webui"];
-  if (options.webui) {
-    const webuiRoot = resolve(gatewayRoot, "..", "clients", "web_ui");
-    const npm = resolveNpmCommand();
-    const webuiArgs = [
-      ...npm.prefixArgs,
-      "run",
-      "dev",
-      "--",
-      "--host",
-      "localhost",
-      "--port",
-      "5173",
-      "--strictPort",
-    ];
-    const webui = spawn(npm.command, webuiArgs, {
-      cwd: webuiRoot,
-      detached: true,
-      stdio: "ignore",
-      env: process.env,
-    });
-    webui.on("error", (err) => {
-      console.error(`[personalos] Failed to start webui process: ${err.message}`);
-    });
-    webui.unref();
-    webuiState = {
-      pid: webui.pid ?? 0,
-      command: `${npm.command} ${webuiArgs.join(" ")}`,
-      url: "http://localhost:5173",
-    };
-  }
-
   const state: PidState = {
     pid: child.pid ?? -1,
     startedAt: new Date().toISOString(),
     command: `${process.execPath} --import tsx src/index.ts`,
-    ...(webuiState ? { webui: webuiState } : {}),
   };
 
-  await writeFile(config.runtime.pidFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await writePidState(state);
   console.log(`personalos started (pid ${state.pid})`);
-  if (state.webui) {
-    console.log(`webui started (pid ${state.webui.pid})`);
-    console.log(`webui url: ${state.webui.url}`);
-  }
   console.log(`log file: ${config.runtime.logFile}`);
+
+  if (options.webui) {
+    await startWebui();
+  }
 }
 
 async function stopCommand(): Promise<void> {
@@ -255,14 +334,19 @@ async function stopCommand(): Promise<void> {
   const gatewayWasRunning = isPidRunning(state.pid);
   const webuiWasRunning = state.webui ? isPidRunning(state.webui.pid) : false;
 
+  // Stop webui first, then gateway
+  let webuiStillRunning = false;
+  if (state.webui && webuiWasRunning) {
+    webuiStillRunning = await stopByPid(state.webui.pid, "webui");
+    if (!webuiStillRunning) {
+      console.log(`webui stopped (pid ${state.webui.pid})`);
+    }
+  }
+
   const gatewayStillRunning = await stopByPid(state.pid, "gateway");
-  const webuiStillRunning = state.webui ? await stopByPid(state.webui.pid, "webui") : false;
 
   if (gatewayWasRunning && !gatewayStillRunning) {
     console.log(`personalos stopped (pid ${state.pid})`);
-  }
-  if (state.webui && webuiWasRunning && !webuiStillRunning) {
-    console.log(`webui stopped (pid ${state.webui.pid})`);
   }
 
   if (!gatewayStillRunning && !webuiStillRunning) {
@@ -283,6 +367,41 @@ async function restartCommand(args: string[]): Promise<void> {
 
   await stopCommand();
   await startCommand(shouldStartWebui ? ["--webui"] : []);
+}
+
+async function webuiStatusCommand(): Promise<void> {
+  const state = await readPidState();
+  if (!state?.webui) {
+    console.log("webui: not running");
+    return;
+  }
+  const running = isPidRunning(state.webui.pid);
+  console.log(`webui: ${running ? "running" : "stopped"} (pid ${state.webui.pid})`);
+  console.log(`webui url: ${state.webui.url}`);
+}
+
+async function webuiCommand(args: string[]): Promise<void> {
+  const subcommand = args[0] ?? "status";
+  switch (subcommand) {
+    case "start":
+      await ensureRuntimeDirs();
+      await startWebui();
+      return;
+    case "stop":
+      await stopWebui();
+      return;
+    case "status":
+      await webuiStatusCommand();
+      return;
+    case "restart":
+      await stopWebui();
+      await startWebui();
+      return;
+    default:
+      console.error(`Unknown webui command: ${subcommand}`);
+      console.log("Usage: personalos webui <start|stop|status|restart>");
+      process.exit(1);
+  }
 }
 
 function formatDuration(ms: number): string {
@@ -364,6 +483,18 @@ function printGatewayStatus(s: GatewayStatus): void {
     }
   }
   console.log(`session: ${s.session.path}`);
+
+  if (s.session.model) {
+    const ctx = s.session.contextTokens;
+    const win = s.session.contextWindow;
+    const ctxStr = ctx !== undefined && win && win > 0
+      ? ` | context: ${ctx.toLocaleString()} / ${win.toLocaleString()} (${Math.round((ctx / win) * 100)}%)`
+      : ctx !== undefined
+        ? ` | context: ${ctx.toLocaleString()} tokens`
+        : "";
+    console.log(`model: ${s.session.model.provider}/${s.session.model.id} (${s.session.model.name})${ctxStr}`);
+  }
+
   console.log("");
   console.log(`heartbeat: ${minsSince(s.heartbeat.lastRunAt)} (${s.heartbeat.intervalMs / 60000}m interval)`);
   console.log(`memory watcher: ${s.memoryWatcher.enabled ? "enabled" : "disabled"}`);
@@ -412,6 +543,9 @@ async function main(): Promise<void> {
       return;
     case "status":
       await statusCommand();
+      return;
+    case "webui":
+      await webuiCommand(args);
       return;
     case "logs":
       await logsCommand(args);

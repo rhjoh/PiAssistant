@@ -50,12 +50,12 @@ export class FileServer {
     console.log("[FileServer] Stopped");
   }
 
-  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+  private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
     // Status endpoint
     if (url === "/status" && req.method === "GET") {
-      this.handleStatusRequest(res);
+      await this.handleStatusRequest(res);
       return;
     }
 
@@ -123,14 +123,14 @@ export class FileServer {
     });
   }
 
-  private handleStatusRequest(res: ServerResponse): void {
+  private async handleStatusRequest(res: ServerResponse): Promise<void> {
     if (!this.statusProvider) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Status not available" }));
       return;
     }
 
-    const status = this.statusProvider.getStatus();
+    const status = await this.statusProvider.getStatus();
     res.writeHead(200, {
       "Content-Type": "application/json",
       "Cache-Control": "no-cache",

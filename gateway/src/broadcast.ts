@@ -1,7 +1,7 @@
 import type { EventEmitter } from "node:events";
 import type { PiRpcClient } from "./pi-rpc.js";
 import type { PiEvent } from "./types.js";
-import type { Client, WSServerMessage, WSStateData } from "./types-ws.js";
+import type { Client, TokenUsage, WSServerMessage, WSStateData } from "./types-ws.js";
 import type { SessionManager } from "./session-manager.js";
 
 /**
@@ -21,6 +21,8 @@ export class BroadcastManager {
     | null = null;
   private sessionManager: SessionManager | null = null;
   private lastUserActivityAt = 0;
+  // Cumulative session token usage
+  private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 
   constructor(private pi: PiRpcClient) {
     this.setupPiListeners();
@@ -78,6 +80,9 @@ export class BroadcastManager {
     const clientIds = new Set(this.clients.keys());
     this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
 
+    const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
+    console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}"`);
+
     // Broadcast user message to all OTHER clients (sender already showed it locally)
     await this.broadcast({
       type: "user_message",
@@ -117,7 +122,8 @@ export class BroadcastManager {
     const clientIds = new Set(this.clients.keys());
     this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
 
-    console.log(`[Broadcast] Sending prompt with ${images.length} image(s) to Pi`);
+    const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
+    console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}" (${images.length} image(s))`);
 
     // Send prompt with images to Pi (this starts the streaming)
     // Note: We don't await here - Pi runs asynchronously and emits events
@@ -164,7 +170,7 @@ export class BroadcastManager {
       const stateResponse = await this.pi.getState();
       
       const stateData = stateResponse.data as { 
-        model?: { id: string; provider: string };
+        model?: { id: string; provider: string; name: string; contextWindow?: number };
         messageCount?: number;
       } | undefined;
 
@@ -173,10 +179,18 @@ export class BroadcastManager {
       return {
         type: "state",
         data: {
-          model: stateData?.model?.id,
-          provider: stateData?.model?.provider,
+          model: stateData?.model ? { id: stateData.model.id, provider: stateData.model.provider, name: stateData.model.name } : undefined,
+          contextWindow: stateData?.model?.contextWindow,
           contextTokens: currentContextTokens ?? undefined,
           isProcessing: false,
+          sessionUsage: {
+            input: this.cumulativeUsage.input,
+            output: this.cumulativeUsage.output,
+            cacheRead: this.cumulativeUsage.cacheRead,
+            cacheWrite: this.cumulativeUsage.cacheWrite,
+            total: this.cumulativeUsage.total,
+            cost: this.cumulativeUsage.cost || undefined,
+          },
         },
       };
     } catch (err) {
@@ -185,6 +199,14 @@ export class BroadcastManager {
         type: "state",
         data: {
           isProcessing: false,
+          sessionUsage: {
+            input: this.cumulativeUsage.input,
+            output: this.cumulativeUsage.output,
+            cacheRead: this.cumulativeUsage.cacheRead,
+            cacheWrite: this.cumulativeUsage.cacheWrite,
+            total: this.cumulativeUsage.total,
+            cost: this.cumulativeUsage.cost || undefined,
+          },
         },
       };
     }
@@ -235,8 +257,20 @@ export class BroadcastManager {
     let currentText = "";
     let insideTool = false;
     let currentThinking = "";
+    let currentThinkingId: string | null = null;
+    let thinkingSeq = 0;
     const lastToolOutputById = new Map<string, string>();
     let eventQueue: Promise<void> = Promise.resolve();
+
+    const flushThinkingBlock = async (): Promise<void> => {
+      if (!currentThinkingId) return;
+      await this.broadcast({
+        type: "thinking_done",
+        data: { thinkingId: currentThinkingId, content: currentThinking, seq: thinkingSeq },
+      });
+      currentThinking = "";
+      currentThinkingId = null;
+    };
 
     const handlePiEvent = async (
       event: PiEvent,
@@ -250,6 +284,7 @@ export class BroadcastManager {
         }
         if (event.type === "agent_end") {
           currentThinking = "";
+          currentThinkingId = null;
           lastToolOutputById.clear();
           insideTool = false;
         }
@@ -258,6 +293,10 @@ export class BroadcastManager {
 
       // Handle tool execution events
       if (event.type === "tool_execution_start") {
+        // Pi may transition straight from thinking into a tool call without an explicit
+        // thinking_done event. Close the active thinking block here so resumed reasoning
+        // after the tool starts a fresh block below the tool lifecycle.
+        await flushThinkingBlock();
         insideTool = true;
 
         const label = this.formatToolLabel(event.toolName || "tool", event.args);
@@ -366,23 +405,22 @@ export class BroadcastManager {
         }
 
         if (msgEvent.type === "thinking_delta") {
+          if (!currentThinkingId) {
+            currentThinkingId = `thinking-${++thinkingSeq}`;
+          }
           currentThinking += msgEvent.delta;
           // Skip heartbeat responses
           const delta = msgEvent.delta;
           if (!delta.includes("[[NO_ACTION]]") && !delta.startsWith("[Heartbeat]")) {
             await this.broadcast({
               type: "thinking_delta",
-              data: { content: delta },
+              data: { thinkingId: currentThinkingId, content: delta, seq: thinkingSeq },
             });
           }
         }
 
-        if (msgEvent.type === "thinking_done") {
-          await this.broadcast({
-            type: "thinking_done",
-            data: { content: currentThinking },
-          });
-          currentThinking = "";
+        if (msgEvent.type === "thinking_done" && currentThinkingId) {
+          await flushThinkingBlock();
         }
       }
 
@@ -423,13 +461,47 @@ export class BroadcastManager {
         } else if (durationMs !== undefined) {
           console.log(`[Broadcast] Done: Duration ${(durationMs / 1000).toFixed(1)}s`);
         }
+
+        // Enrich usage with cumulative totals and context estimate
+        let enrichedUsage: TokenUsage | undefined = usage;
+        if (usage) {
+          this.cumulativeUsage.input += usage.input;
+          this.cumulativeUsage.output += usage.output;
+          this.cumulativeUsage.cacheRead += usage.cacheRead;
+          this.cumulativeUsage.cacheWrite += usage.cacheWrite;
+          this.cumulativeUsage.total += usage.total;
+          if (usage.cost) this.cumulativeUsage.cost += usage.cost;
+
+          enrichedUsage = {
+            input: usage.input,
+            output: usage.output,
+            cacheRead: usage.cacheRead,
+            cacheWrite: usage.cacheWrite,
+            total: usage.total,
+            cost: usage.cost,
+            cumulative: {
+              input: this.cumulativeUsage.input,
+              output: this.cumulativeUsage.output,
+              cacheRead: this.cumulativeUsage.cacheRead,
+              cacheWrite: this.cumulativeUsage.cacheWrite,
+              total: this.cumulativeUsage.total,
+              cost: this.cumulativeUsage.cost || undefined,
+            },
+            contextTokens: usage.cacheRead + usage.input,
+          };
+        }
+
+        await flushThinkingBlock();
+
         await this.broadcast({
           type: "done",
-          data: { finalText: imageExtractions.textOnly, usage },
+          data: { finalText: imageExtractions.textOnly, usage: enrichedUsage },
         });
 
         // Reset state for next prompt
         currentText = "";
+        currentThinking = "";
+        currentThinkingId = null;
         insideTool = false;
         this.currentPrompt = null;
       }
@@ -713,6 +785,13 @@ export class BroadcastManager {
 
     try {
       await this.pi.setModelViaRpc(selected.provider, selected.id);
+
+      // Broadcast model change to all WS clients
+      await this.broadcast({
+        type: "model_switched",
+        data: { success: true, model: { provider: selected.provider, id: selected.id, name: selected.name } },
+      });
+
       return `Model changed to ${selected.provider}/${selected.id} (${selected.name})`;
     } catch (err) {
       return `Failed to set model: ${err instanceof Error ? err.message : "Unknown error"}`;
@@ -745,6 +824,13 @@ export class BroadcastManager {
       }
 
       await this.pi.setModelViaRpc(provider, modelId);
+
+      // Broadcast model change to all clients
+      await this.broadcast({
+        type: "model_switched",
+        data: { success: true, model: { provider: model.provider, id: model.id, name: model.name } },
+      });
+
       return { success: true, model };
     } catch (err) {
       return { 
@@ -854,6 +940,9 @@ export class BroadcastManager {
     }
 
     const result = await this.sessionManager.archiveAndStartNew();
+
+    // Reset cumulative usage for new session
+    this.cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 
     if (result.error) {
       return `❌ Failed to start new session: ${result.error}`;
