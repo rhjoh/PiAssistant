@@ -1,0 +1,48 @@
+[package]
+name = "assistant-tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rhys Johnston"]
+description = "Terminal UI client for the Personal Assistant Gateway"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures = "0.3"
+
+# TUI framework
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tui-textarea = "0.7"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling & utilities
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Text & formatting
+unicode-width = "0.2"
+textwrap = "0.16"
+chrono = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Clipboard
+arboard = "3.4"
+
+# Directories
+dirs = "5.0"
+
+# URL parsing
+url = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = true
