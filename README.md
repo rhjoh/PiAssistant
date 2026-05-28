@@ -5,14 +5,14 @@ Personal AI assistant system with a gateway-owned Pi RPC session and multiple cl
 - Telegram bot
 - macOS native app
 - Web UI
-- Pi TUI via bridge extension
+- Custom TUI (Rust)
 
 The gateway is the source of truth. It owns the Pi RPC process, session lifecycle, multi-client sync, background services, and local file/status serving.
 
 ## Current Architecture
 
 ```text
-Telegram + macOS app + Web UI + Pi TUI bridge
+Telegram + macOS app + Web UI + TUI
                     ↓
          Gateway (Node.js, localhost)
       - Pi RPC owner
@@ -32,12 +32,11 @@ Telegram + macOS app + Web UI + Pi TUI bridge
 ```text
 assistant/
 ├── gateway/
-│   ├── bin/personalos.mjs        # CLI entrypoint
+│   ├── bin/personalos.mjs        # CLI entrypoint (`npm link` → `personalos`)
 │   ├── src/
 │   │   ├── index.ts              # Gateway bootstrap
 │   │   ├── cli/                  # Managed start/stop/status/logs CLI
-│   │   ├── websocket-server.ts   # Standard WS server + /pi-client routing
-│   │   ├── pi-client-handler.ts  # Native Pi bridge protocol handling
+│   │   ├── websocket-server.ts   # Standard WS server
 │   │   ├── broadcast.ts          # Multi-client event distribution
 │   │   ├── pi-rpc.ts             # Pi RPC wrapper
 │   │   ├── file-server.ts        # Local image serving + /status endpoint
@@ -50,7 +49,7 @@ assistant/
 ├── clients/
 │   ├── macos/ChatAssistant/      # SwiftUI macOS client
 │   ├── web_ui/                   # React/Vite browser client
-│   └── pi-extension/             # Repo copy of gateway bridge extension
+│   └── tui/                      # Rust TUI client
 └── docs/
     ├── ARCHITECTURE.md
     ├── ROADMAP.md
@@ -78,19 +77,24 @@ npm install
 npm run dev
 ```
 
-Or use the managed CLI:
+Or use the managed CLI (requires `npm link` in `gateway/` first):
 
 ```bash
 cd gateway
-npm install
-node ./bin/personalos.mjs run
+npm link
+personalos run
 ```
 
-Background mode:
+Other commands:
 
 ```bash
-cd gateway
-node ./bin/personalos.mjs start --webui
+personalos start
+personalos stop       # Stop background gateway
+personalos restart    # Restart
+personalos status     # Check if running
+personalos logs       # View recent logs
+personalos logs -f    # Tail logs
+personalos webui start # Start webUI dev server
 ```
 
 ### macOS client
@@ -109,18 +113,9 @@ npm install
 npm run dev
 ```
 
-### Pi bridge
-
-```bash
-cp clients/pi-extension/gateway-bridge.ts ~/.pi/agent/extensions/gateway-bridge.ts
-pi extensions enable gateway-bridge
-pi --provider gateway-bridge
-```
-
 ## Network Endpoints
 
 - `ws://127.0.0.1:3456/` - standard clients
-- `ws://127.0.0.1:3456/pi-client` - Pi bridge endpoint
 - `http://127.0.0.1:3457/files/<absolute-path>` - local image/file serving
 - `http://127.0.0.1:3457/status` - gateway status JSON
 
@@ -170,5 +165,5 @@ cd clients/macos/ChatAssistant && swift build
 
 - The gateway binds to localhost only.
 - Telegram is optional at runtime, but the gateway currently expects Telegram config to be present.
-- The Pi TUI no longer owns the session directly; bridge mode is the supported path.
+- The custom TUI connects as a first-class standard client.
 - `docs/ARCHITECTURE.md` is the detailed system reference.
