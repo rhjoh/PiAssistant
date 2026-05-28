@@ -27,6 +27,8 @@ type MemoryWatcherOptions = {
   activeWindowMs: number;
   memoryPromptPath: string;
   onTick?: () => void;
+  /** If provided, skip extraction when this returns true (e.g. main Pi session is busy). */
+  isBusy?: () => boolean;
 };
 
 export class MemoryWatcher {
@@ -53,14 +55,19 @@ export class MemoryWatcher {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running) {
+      console.log(`[MemoryWatcher] Tick skipped — previous tick still running`);
+      return;
+    }
     this.running = true;
     this.options.onTick?.();
+    const tickStart = Date.now();
     console.log(`[MemoryWatcher] Tick started`);
     try {
       const entries = await this.collectNewEntries();
       if (entries.length === 0) {
-        console.log(`[MemoryWatcher] No new entries found`);
+        console.log(`[MemoryWatcher] No new entries found (${Date.now() - tickStart}ms)`);
+        await this.saveState();
         return;
       }
       console.log(`[MemoryWatcher] Processing ${entries.length} new entries`);
@@ -72,6 +79,14 @@ export class MemoryWatcher {
       }, {} as Record<string, number>);
       const rolesSummary = Object.entries(roles).map(([r, n]) => `${r}:${n}`).join(" ");
       console.log(`[MemoryWatcher] Input: ${entries.length} entries (${rolesSummary}), ${context.length} chars`);
+
+      // Don't spawn pi extraction if the main Pi session (or another client) is busy —
+      // pi uses a global lock file so two instances can't run concurrently.
+      if (this.options.isBusy?.()) {
+        console.log(`[MemoryWatcher] Skipping extract — main session is busy. Will retry on next tick.`);
+        return;
+      }
+
       await this.ensureMemoryFiles();
 
       await this.extractAndAppend({
@@ -85,6 +100,8 @@ export class MemoryWatcher {
       console.error("[MemoryWatcher] Error:", error);
     } finally {
       this.running = false;
+      const elapsed = ((Date.now() - tickStart) / 1000).toFixed(1);
+      console.log(`[MemoryWatcher] Tick finished — ${elapsed}s`);
     }
   }
 
@@ -246,18 +263,21 @@ export class MemoryWatcher {
     try {
       stdout = await new Promise<string>((resolve, reject) => {
         const timeoutMs = 60000; // 1 minute timeout
+        const spawnStart = Date.now();
+        
         const timeoutId = setTimeout(() => {
+          const elapsed = ((Date.now() - spawnStart) / 1000).toFixed(1);
+          console.error(`[MemoryWatcher:${params.target}] ⏰ TIMEOUT after ${timeoutMs}ms (${elapsed}s since spawn) — killing pi`);
           proc.kill("SIGKILL");
           reject(new Error(`Pi extraction timed out after ${timeoutMs}ms`));
         }, timeoutMs);
         
-        const startTime = Date.now();
         const progressInterval = setInterval(() => {
-          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          console.log(`[MemoryWatcher:${params.target}] Still extracting... (${elapsed}s)`);
+          const elapsed = ((Date.now() - spawnStart) / 1000).toFixed(1);
+          console.log(`[MemoryWatcher:${params.target}] ⏳ Still extracting... (${elapsed}s)`);
         }, 10000); // Every 10 seconds
         
-        const proc = spawn("pi", [
+        const procArgs = [
           "--print",
           "--no-session",
           "--no-tools",
@@ -265,8 +285,9 @@ export class MemoryWatcher {
           this.options.provider,
           "--model",
           this.options.model,
-          params.prompt,
-        ]);
+        ];
+        console.log(`[MemoryWatcher:${params.target}] 🚀 Spawning pi (${this.options.provider}/${this.options.model})`);
+        const proc = spawn("pi", procArgs);
         
         proc.stdin.end(); // Close stdin so Pi doesn't wait
         
@@ -284,19 +305,24 @@ export class MemoryWatcher {
         });
         
         proc.on("close", (code) => {
+          const elapsed = ((Date.now() - spawnStart) / 1000).toFixed(1);
           clearTimeout(timeoutId);
           clearInterval(progressInterval);
           if (code === 0) {
+            console.log(`[MemoryWatcher:${params.target}] ✅ pi exited cleanly (${elapsed}s, ${out.length} chars output)`);
             resolve(out);
           } else {
-            console.error(`[MemoryWatcher] Pi stderr: ${err}`);
+            console.error(`[MemoryWatcher:${params.target}] ❌ pi exited with code ${code} (${elapsed}s)`);
+            if (err) console.error(`[MemoryWatcher:${params.target}] stderr: ${err.slice(0, 500)}`);
             reject(new Error(`pi exited with code ${code}`));
           }
         });
         
         proc.on("error", (err) => {
+          const elapsed = ((Date.now() - spawnStart) / 1000).toFixed(1);
           clearTimeout(timeoutId);
           clearInterval(progressInterval);
+          console.error(`[MemoryWatcher:${params.target}] 💥 pi spawn error (${elapsed}s):`, err.message);
           reject(err);
         });
       });

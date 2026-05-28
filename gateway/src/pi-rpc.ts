@@ -1,6 +1,12 @@
 import { spawn, ChildProcess } from "node:child_process";
-import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
+
+/**
+ * Inactivity timeout for prompts. If Pi stops emitting events for this long
+ * during an active prompt, the prompt is considered hung and cleaned up.
+ * Resets on each event (text_delta, tool_execution_update, etc.).
+ */
+const PROMPT_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 import type { PiCommand, PiEvent, PiResponse, PiState } from "./types.js";
 
 export interface PiRpcEvents {
@@ -15,13 +21,19 @@ export interface PiRpcEvents {
 
 export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private process: ChildProcess | null = null;
-  private readline: Interface | null = null;
+  private bufferCleanup: (() => void) | null = null;
   private currentText = "";
   private requestId = 0;
   private parseErrorCount = 0;
   private parseErrorSuppressed = false;
   private activePromptSource: "user" | "internal" | null = null;
   private promptQueue: Promise<void> = Promise.resolve();
+  /** Reject function for the actively running runPrompt, so we can unstick on crash. */
+  private pendingPromptReject: ((err: Error) => void) | null = null;
+  /** Cleanup function for the actively running runPrompt, to remove listeners on crash. */
+  private pendingPromptCleanup: (() => void) | null = null;
+  /** Inactivity timeout handle for the currently active prompt (resets on each Pi event). */
+  private promptInactivityTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private sessionPath: string,
@@ -82,12 +94,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    this.readline = createInterface({
-      input: this.process.stdout!,
-      crlfDelay: Infinity,
-    });
-
-    this.readline.on("line", (line) => this.handleLine(line));
+    this.bufferCleanup = attachJsonlReader(this.process.stdout!, (line) => this.handleLine(line));
 
     this.process.stderr?.on("data", (data) => {
       const msg = data.toString().trim();
@@ -100,7 +107,23 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
     this.process.on("exit", (code) => {
       this.process = null;
-      this.readline = null;
+      this.bufferCleanup = null;
+      // 🛡️ FIX 1: Clean up active prompt state so isPromptActive doesn't get stuck forever
+      if (this.activePromptSource !== null) {
+        console.warn(
+          `[Pi RPC] Process exited (code=${code}) with active prompt (source=${this.activePromptSource}) - cleaning up`
+        );
+        this.activePromptSource = null;
+      }
+      if (this.pendingPromptReject) {
+        this.pendingPromptReject(new Error(`Pi process exited with code ${code}`));
+        this.pendingPromptReject = null;
+        this.pendingPromptCleanup = null;
+      }
+      if (this.promptInactivityTimer) {
+        clearTimeout(this.promptInactivityTimer);
+        this.promptInactivityTimer = null;
+      }
       this.emit("exit", code);
     });
 
@@ -117,8 +140,19 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     if (this.process) {
       this.process.kill("SIGTERM");
       this.process = null;
-      this.readline = null;
+      this.bufferCleanup = null;
     }
+    // 🛡️ FIX 1b: Clean up state if stop() is called during an active prompt
+    if (this.pendingPromptReject) {
+      this.pendingPromptReject(new Error("Pi RPC stopped"));
+      this.pendingPromptReject = null;
+      this.pendingPromptCleanup = null;
+    }
+    if (this.promptInactivityTimer) {
+      clearTimeout(this.promptInactivityTimer);
+      this.promptInactivityTimer = null;
+    }
+    this.activePromptSource = null;
   }
 
   async prompt(
@@ -271,13 +305,44 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
         `[Pi RPC] Prompt start (${source}) id=${promptId} text="${promptPreview}" queueActive=${this.isPromptActive}`
       );
 
+      // 🛡️ Track cleanup and reject so we can unstick on process crash
       const cleanup = () => {
         this.off("event", onEvent);
         this.off("error", onError);
+        this.pendingPromptReject = null;
+        this.pendingPromptCleanup = null;
+        if (this.promptInactivityTimer) {
+          clearTimeout(this.promptInactivityTimer);
+          this.promptInactivityTimer = null;
+        }
         this.activePromptSource = null;
       };
 
+      const resetInactivityTimer = () => {
+        if (this.promptInactivityTimer) {
+          clearTimeout(this.promptInactivityTimer);
+        }
+        this.promptInactivityTimer = setTimeout(() => {
+          const err = new Error(
+            `Prompt timed out after ${PROMPT_INACTIVITY_TIMEOUT_MS / 1000}s of inactivity (source=${source})`
+          );
+          console.error(`[Pi RPC] ${err.message}`);
+          this.promptInactivityTimer = null;
+          cleanup();
+          reject(err);
+        }, PROMPT_INACTIVITY_TIMEOUT_MS);
+        // Don't keep Node alive for this timer alone
+        this.promptInactivityTimer.unref();
+      };
+
+      // Store references for crash recovery
+      this.pendingPromptReject = reject;
+      this.pendingPromptCleanup = cleanup;
+
       const onEvent = (event: PiEvent) => {
+        // Reset inactivity timer on any event from Pi
+        resetInactivityTimer();
+
         if (event.type === "message_update") {
           if (event.assistantMessageEvent.type === "text_delta") {
             this.currentText += event.assistantMessageEvent.delta;
@@ -341,6 +406,9 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
       this.on("event", onEvent);
       this.on("error", onError);
+
+      // Start the inactivity timer
+      resetInactivityTimer();
 
       this.send(command);
     });
@@ -447,4 +515,42 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.send(withId);
     });
   }
+}
+
+/**
+ * Attach a JSON-lines reader to a readable stream.
+ * Splits only on \\n (protocol-compliant) — unlike Node's readline which also
+ * splits on U+2028 and U+2029 (valid inside JSON strings).
+ */
+function attachJsonlReader(
+  stream: NodeJS.ReadableStream,
+  onLine: (line: string) => void
+): () => void {
+  let buffer = "";
+
+  const onData = (chunk: Buffer) => {
+    buffer += chunk.toString("utf-8");
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) break;
+      let line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      onLine(line);
+    }
+  };
+
+  const onEnd = () => {
+    if (buffer.length > 0) onLine(buffer);
+    buffer = "";
+  };
+
+  stream.on("data", onData);
+  stream.on("end", onEnd);
+
+  return () => {
+    stream.off("data", onData);
+    stream.off("end", onEnd);
+    buffer = "";
+  };
 }

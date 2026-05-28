@@ -171,6 +171,8 @@ export async function startGateway(): Promise<void> {
     activeWindowMs: config.memory.activeWindowMs,
     memoryPromptPath: config.memory.memoryPromptPath,
     onTick: () => statusProvider.recordMemoryWatcherRun(),
+    // Don't spawn extraction while the main Pi session is processing a prompt
+    isBusy: () => pi.isPromptActive,
   });
 
   telegram.onNewSession(async () => handleNew(sessionManager, config.pi.sessionPath, memoryWatcher));
