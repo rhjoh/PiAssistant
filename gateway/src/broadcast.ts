@@ -26,6 +26,7 @@ export class BroadcastManager {
 
   constructor(private pi: PiRpcClient) {
     this.setupPiListeners();
+    this.setupPiExitHandler();
   }
 
   /**
@@ -70,8 +71,12 @@ export class BroadcastManager {
    * Returns the clients that will receive this response
    */
   async sendPrompt(message: string, originatingClientId: string): Promise<Set<string>> {
-    if (this.currentPrompt || this.pi.isPromptActive) {
+    if (this.currentPrompt) {
       throw new Error("Assistant is busy with another prompt");
+    }
+    // Internal prompts (heartbeat) are non-blocking — they queue behind the user prompt
+    if (this.pi.isPromptActive) {
+      console.log("[Broadcast] User prompt queued behind active internal prompt (heartbeat)");
     }
 
     this.lastUserActivityAt = Date.now();
@@ -112,8 +117,12 @@ export class BroadcastManager {
     images: { data: string; mimeType: string; path?: string }[],
     originatingClientId: string
   ): Promise<Set<string>> {
-    if (this.currentPrompt || this.pi.isPromptActive) {
+    if (this.currentPrompt) {
       throw new Error("Assistant is busy with another prompt");
+    }
+    // Internal prompts (heartbeat) are non-blocking — they queue behind the user prompt
+    if (this.pi.isPromptActive) {
+      console.log("[Broadcast] User prompt (with images) queued behind active internal prompt (heartbeat)");
     }
 
     this.lastUserActivityAt = Date.now();
@@ -272,14 +281,18 @@ export class BroadcastManager {
       currentThinkingId = null;
     };
 
+    let suppressedEventsLogged = false;
+
     const handlePiEvent = async (
       event: PiEvent,
       promptSource: "user" | "internal" | null
     ): Promise<void> => {
       if (promptSource !== "user") {
-        if (event.type === "agent_end") {
+        // Log one line per suppressed turn block, not per event
+        if (!suppressedEventsLogged) {
+          suppressedEventsLogged = true;
           console.log(
-            `[Broadcast] Ignoring agent_end for non-user prompt (source=${promptSource ?? "unknown"})`
+            `[Broadcast] Suppressing events for non-user prompt (source=${promptSource ?? "unknown"})`
           );
         }
         if (event.type === "agent_end") {
@@ -287,8 +300,12 @@ export class BroadcastManager {
           currentThinkingId = null;
           lastToolOutputById.clear();
           insideTool = false;
+          suppressedEventsLogged = false;
         }
         return;
+      } else {
+        // Reset flag when transitioning to a user prompt
+        suppressedEventsLogged = false;
       }
 
       // Handle tool execution events
@@ -724,6 +741,24 @@ export class BroadcastManager {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Listen for Pi process exit so we can clear state instead of getting stuck.
+   */
+  private setupPiExitHandler(): void {
+    this.pi.on("exit", (code) => {
+      if (this.currentPrompt) {
+        console.warn(
+          `[Broadcast] Pi process exited (code=${code}) with active prompt - clearing state and notifying clients`
+        );
+        this.broadcast({
+          type: "error",
+          data: { message: "Assistant process exited - please start a new session" },
+        }).catch(() => {});
+        this.currentPrompt = null;
+      }
+    });
   }
 
   // MARK: - Slash Command Handlers
