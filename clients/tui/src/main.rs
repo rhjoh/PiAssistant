@@ -14,6 +14,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
+use ratatui_image::picker::{Picker, ProtocolType};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
 use tracing::{error, info};
@@ -21,10 +22,13 @@ use tracing::{error, info};
 mod app;
 mod clipboard;
 mod protocol;
+mod theme;
 mod ui;
 mod websocket;
+mod wrap;
 
 use app::App;
+use theme::Theme;
 use websocket::{WebSocketClient, WsEvent};
 
 const GATEWAY_URL: &str = "ws://localhost:3456";
@@ -93,8 +97,34 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Detect terminal image capabilities
+    let mut picker = Picker::from_query_stdio()
+        .unwrap_or_else(|_| {
+            // Fallback: assume a typical 8x16 font on a standard terminal
+            Picker::halfblocks()
+        });
+
+    // Override for tmux: auto-detection fails because $TERM=tmux-256color,
+    // but Kitty graphics escape sequences still pass through.
+    if std::env::var("TERM").unwrap_or_default().contains("tmux") {
+        picker.set_protocol_type(ProtocolType::Kitty);
+    }
+
+    info!(
+        "Image protocol: {:?}, font size: {:?}",
+        picker.protocol_type(), picker.font_size()
+    );
+
+    // Resolve theme: CLI arg --theme <name> > env ASSISTANT_TUI_THEME > default
+    let theme_name = std::env::var("ASSISTANT_TUI_THEME").unwrap_or_else(|_| "default".to_string());
+    let theme = Theme::by_name(&theme_name).unwrap_or_else(|| {
+        info!("Unknown theme \"{}\", falling back to default", &theme_name);
+        Theme::default()
+    });
+    info!("Using theme: {}", theme.name);
+
     // Create app and websocket
-    let mut app = App::new();
+    let mut app = App::new(picker, theme);
     let (ws_client, mut ws_rx, ws_tx) = WebSocketClient::new(GATEWAY_URL);
 
     // Start websocket in background
@@ -130,7 +160,10 @@ async fn run_app<B: Backend>(
     app: &mut App,
     ws_tx: &tokio::sync::mpsc::UnboundedSender<protocol::ClientMessage>,
     ws_rx: &mut UnboundedReceiver<WsEvent>,
-) -> Result<()> {
+) -> Result<()>
+where
+    <B as Backend>::Error: Send + Sync + std::error::Error + 'static,
+{
     let mut reader = EventStream::new();
     let mut tick_interval = time::interval(TICK_RATE);
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -289,6 +322,7 @@ async fn handle_key(
         // Esc: abort generation if processing
         Esc => {
             if app.is_processing {
+                info!("Esc pressed — aborting generation");
                 if let Some(msg) = app.abort() {
                     let _ = ws_tx.send(msg);
                 }
@@ -394,11 +428,19 @@ async fn handle_key(
                 if key.modifiers.contains(KeyModifiers::SUPER) {
                     app.input_text.clear();
                 // Option+Backspace (macOS) → delete word
+                // Also catch Ctrl+W (\x17) which Ghostty sends for Option+Backspace
+                // when macos-option-as-alt is set and alt+backspace is remapped.
                 } else if key.modifiers.contains(KeyModifiers::ALT) {
                     delete_last_word(&mut app.input_text);
                 } else {
                     app.input_text.pop();
                 }
+            }
+            // Ctrl+W: delete last word.
+            // Ghostty sends this (via alt+backspace=text:\x17) when macos-option-as-alt is set.
+            // Crossterm normalises 0x17 into Char('w') with the CONTROL modifier.
+            Char('w') if ctrl => {
+                delete_last_word(&mut app.input_text);
                 if app.input_text.starts_with('/') {
                     app.open_command_popup();
                 } else {
