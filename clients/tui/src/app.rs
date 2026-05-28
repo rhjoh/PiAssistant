@@ -1,13 +1,18 @@
+use std::fmt;
 use std::collections::HashMap;
 
 use chrono::Local;
-use ratatui::layout::Rect;
+use ratatui::layout::{Rect, Size};
 use ratatui::text::Line;
-use tracing::{debug, info};
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+use ratatui_image::Resize;
+use tracing::{debug, info, warn};
 
 use crate::protocol::{
     ClientMessage, ModelInfo, ServerMessage, TokenUsage, ToolOutputData,
 };
+use crate::theme::Theme;
 use crate::websocket::WsEvent;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -31,6 +36,8 @@ pub struct ChatMessage {
     pub is_streaming: bool,
     pub render_cache: Vec<Line<'static>>,
     pub render_dirty: bool,
+    /// Line offset within render_cache for each ContentItem (for image overlay positioning).
+    pub item_line_offsets: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +96,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "session", description: "Show session info and stats", usage: "/session" },
     SlashCommand { name: "new", description: "Archive session and start fresh", usage: "/new" },
     SlashCommand { name: "clear", description: "Clear the chat view", usage: "/clear" },
+    SlashCommand { name: "theme", description: "Switch color theme", usage: "/theme [<name>]" },
 ];
 
 /// State for the slash-command autocomplete popup.
@@ -126,8 +134,8 @@ pub struct MouseSelection {
     pub dragging: bool,
 }
 
-#[derive(Debug, Default)]
 pub struct App {
+    pub theme: Theme,
     pub connection_state: ConnectionState,
     pub messages: Vec<ChatMessage>,
     pub input_text: String,
@@ -152,6 +160,8 @@ pub struct App {
     pub spinner_frame: usize,
     // Track streaming state
     streaming_message_id: Option<String>,
+    /// Set when user aborts; prevents residual deltas from creating new streaming messages.
+    aborted: bool,
     // Track tool outputs for deduplication during streaming
     tool_outputs: HashMap<String, String>,
     // Track pending slash command so responses render as system messages
@@ -168,20 +178,64 @@ pub struct App {
     pub mouse_selection: Option<MouseSelection>,
     pub message_start_lines: Vec<usize>,
     pub current_message_index: Option<usize>,
+    /// Terminal image protocol picker (protocol + font size detection).
+    pub picker: Picker,
+    /// Cache of pre-encoded images keyed by source file path.
+    pub image_cache: HashMap<String, Protocol>,
+}
+
+impl fmt::Debug for App {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("App")
+            .field("connection_state", &self.connection_state)
+            .field("messages", &self.messages.len())
+            .field("input_text", &self.input_text)
+            .field("is_input_focused", &self.is_input_focused)
+            .field("scroll_from_bottom", &self.scroll_from_bottom)
+            .field("current_model", &self.current_model)
+            .field("is_processing", &self.is_processing)
+            .field("image_cache_size", &self.image_cache.len())
+            .finish()
+    }
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(picker: Picker, theme: Theme) -> Self {
         Self {
+            theme,
+            connection_state: ConnectionState::default(),
+            messages: Vec::new(),
+            input_text: String::new(),
             is_input_focused: true,
-            show_thinking: true,
             scroll_from_bottom: 0,
+            max_scroll_from_bottom: 0,
+            current_model: None,
+            context_window: None,
+            context_tokens: None,
+            is_processing: false,
+            latency_ms: None,
+            token_usage: TokenUsage::default(),
+            error_message: None,
+            show_help: false,
+            show_thinking: true,
+            render_cache_width: None,
+            render_cache_show_thinking: true,
+            spinner_frame: 0,
+            streaming_message_id: None,
+            aborted: false,
+            tool_outputs: HashMap::new(),
             pending_command: None,
             command_response_buffer: String::new(),
             command_popup: None,
             model_picker: None,
             available_models: Vec::new(),
-            ..Default::default()
+            message_viewport: None,
+            visible_text_lines: Vec::new(),
+            mouse_selection: None,
+            message_start_lines: Vec::new(),
+            current_message_index: None,
+            picker,
+            image_cache: HashMap::new(),
         }
     }
 
@@ -284,6 +338,7 @@ impl App {
                     self.add_system_message(&text);
                     self.is_processing = false;
                     self.streaming_message_id = None;
+                    self.aborted = false;
                     return;
                 }
                 // Skip heartbeat responses entirely
@@ -389,6 +444,7 @@ impl App {
             is_streaming: false,
             render_cache: Vec::new(),
             render_dirty: true,
+            item_line_offsets: Vec::new(),
         };
         self.messages.push(msg);
     }
@@ -410,6 +466,7 @@ impl App {
             is_streaming: true,
             render_cache: Vec::new(),
             render_dirty: true,
+            item_line_offsets: Vec::new(),
         };
         self.messages.push(msg);
         self.streaming_message_id = Some(id.clone());
@@ -420,6 +477,9 @@ impl App {
     }
 
     fn append_text_delta(&mut self, delta: &str) {
+        if self.aborted {
+            return;
+        }
         let msg = self.ensure_streaming_message();
 
         // Skip heartbeat responses
@@ -445,6 +505,9 @@ impl App {
     }
 
     fn append_thinking_delta(&mut self, thinking_id: &str, delta: &str) {
+        if self.aborted {
+            return;
+        }
         let msg = self.ensure_streaming_message();
 
         if delta.contains("[[NO_ACTION]]") || delta.starts_with("[Heartbeat]") {
@@ -542,6 +605,9 @@ impl App {
     }
 
     fn add_tool_call(&mut self, id: &str, name: &str, args: &Option<serde_json::Value>, label: &str) {
+        if self.aborted {
+            return;
+        }
         let msg = self.ensure_streaming_message();
 
         let args_str = args
@@ -605,12 +671,61 @@ impl App {
     }
 
     fn add_image(&mut self, source: &str, alt: Option<String>) {
+        if self.aborted {
+            return;
+        }
+
+        // Try to decode and encode the image for terminal rendering.
+        // The source is a local file path (from the gateway's image storage).
+        if !self.image_cache.contains_key(source) {
+            match self.encode_image(source) {
+                Ok(proto) => {
+                    self.image_cache.insert(source.to_string(), proto);
+                }
+                Err(e) => {
+                    warn!("Failed to encode image {}: {}", source, e);
+                    // Continue — the image will render as a text placeholder.
+                }
+            }
+        }
+
         let msg = self.ensure_streaming_message();
         msg.items.push(ContentItem::Image {
             source: source.to_string(),
             alt,
         });
         msg.render_dirty = true;
+    }
+
+    /// Decode an image from disk and pre-encode it for the terminal's graphics protocol.
+    fn encode_image(&mut self, path: &str) -> anyhow::Result<Protocol> {
+        let dyn_img = image::ImageReader::open(path)?.decode()?;
+
+        let (img_w, img_h) = (dyn_img.width(), dyn_img.height());
+
+        // Calculate target cell size: fit to content_width, preserve aspect ratio.
+        let cols = self.render_cache_width.unwrap_or(80) as u32;
+        let font_size = self.picker.font_size();
+        let cell_w_px = font_size.width as u32;
+        let cell_h_px = font_size.height as u32;
+
+        // Fit image to the available width in cells, calculate proportional height.
+        let target_width_cells = cols.saturating_sub(4); // margin
+        let target_width_px = target_width_cells * cell_w_px;
+        let scale = target_width_px as f64 / img_w as f64;
+        let target_height_cells = ((img_h as f64 * scale) / cell_h_px as f64).ceil() as u16;
+        let target_width_cells = target_width_cells as u16;
+
+        let size = Size::new(target_width_cells, target_height_cells.max(1));
+
+        let proto = self.picker.new_protocol(dyn_img, size, Resize::Fit(None))?;
+
+        debug!(
+            "Encoded image {}: {}x{} cells ({}x{}px original)",
+            path, size.width, size.height, img_w, img_h
+        );
+
+        Ok(proto)
     }
 
     pub fn add_system_message(&mut self, content: &str) {
@@ -622,6 +737,7 @@ impl App {
             is_streaming: false,
             render_cache: Vec::new(),
             render_dirty: true,
+            item_line_offsets: Vec::new(),
         };
         self.messages.push(msg);
     }
@@ -632,47 +748,43 @@ impl App {
                 let msg = &mut self.messages[idx];
                 msg.is_streaming = false;
 
-                // Replace accumulated text with final text
-                let mut new_items = Vec::new();
-                let mut found_text = false;
+                // Web UI semantics: keep streamed items as-is (text blocks stay in their
+                // natural position relative to tool calls). Only append final_text if there
+                // are zero text items at all (prevents blank responses).
+                let has_text = msg.items.iter().any(|i| matches!(i, ContentItem::Text(_)));
 
-                for item in msg.items.drain(..) {
-                    match item {
-                        ContentItem::Text(_) if !found_text => {
-                            new_items.push(ContentItem::Text(sanitize_display_text(final_text)));
-                            found_text = true;
+                if !has_text && !final_text.is_empty() {
+                    msg.items.push(ContentItem::Text(sanitize_display_text(final_text)));
+                }
+
+                // Mark incomplete thinking blocks as complete; remove empty ones
+                msg.items.retain(|item| {
+                    if let ContentItem::Thinking { content, .. } = item {
+                        !content.is_empty()
+                    } else {
+                        true
+                    }
+                });
+                for item in &mut msg.items {
+                    if let ContentItem::Thinking {
+                        ref mut is_complete,
+                        ref mut content,
+                        ..
+                    } = item
+                    {
+                        if !*is_complete {
+                            *is_complete = true;
+                            *content = sanitize_display_text(content);
                         }
-                        ContentItem::Text(_) => {
-                            // Skip duplicate text items
-                        }
-                        ContentItem::Thinking {
-                            thinking_id,
-                            content,
-                            is_complete: false,
-                        } if !content.is_empty() => {
-                            new_items.push(ContentItem::Thinking {
-                                thinking_id,
-                                content: sanitize_display_text(&content),
-                                is_complete: true,
-                            });
-                        }
-                        ContentItem::Thinking { content, .. } if content.is_empty() => {
-                            // Skip empty thinking blocks
-                        }
-                        other => new_items.push(other),
                     }
                 }
 
-                if !found_text && !final_text.is_empty() {
-                    new_items.push(ContentItem::Text(sanitize_display_text(final_text)));
-                }
-
-                msg.items = new_items;
                 msg.render_dirty = true;
             }
         }
 
         self.is_processing = false;
+        self.aborted = false;
         self.tool_outputs.clear();
     }
 
@@ -688,6 +800,8 @@ impl App {
             return None;
         }
 
+        self.aborted = false;
+
         // Add user message locally (gateway doesn't echo it back to sender)
         let user_msg = ChatMessage {
             id: format!("msg-{}", self.messages.len()),
@@ -697,6 +811,7 @@ impl App {
             is_streaming: false,
             render_cache: Vec::new(),
             render_dirty: true,
+            item_line_offsets: Vec::new(),
         };
         self.messages.push(user_msg);
         self.scroll_to_bottom();
@@ -727,6 +842,29 @@ impl App {
                 }
             }
 
+            // Handle /theme locally (no gateway round-trip)
+            if command == "theme" {
+                self.input_text.clear();
+                self.pending_command = None;
+                let arg = parts.get(1).map(|s| s.trim());
+                match arg {
+                    None | Some("") | Some("list") => {
+                        let names = Theme::all_names();
+                        let list = names.iter().map(|n| format!("  • {} {}", n, if *n == self.theme.name {"← current"} else {""})).collect::<Vec<_>>().join("\n");
+                        self.add_system_message(&format!("Available themes:\n{}\n\nUsage: /theme <name>", list));
+                    }
+                    Some(name) => {
+                        if self.set_theme(name) {
+                            self.add_system_message(&format!("Switched to theme: {}", name));
+                        } else {
+                            let names = Theme::all_names().join(", ");
+                            self.add_system_message(&format!("Unknown theme \"{}\". Available: {}", name, names));
+                        }
+                    }
+                }
+                return None;
+            }
+
             self.pending_command = Some(command.clone());
             self.command_response_buffer.clear();
             info!("Command submitted: /{} — pending_command set", command);
@@ -748,6 +886,31 @@ impl App {
 
     pub fn abort(&mut self) -> Option<ClientMessage> {
         if self.is_processing {
+            info!("Aborting — cleaning up streaming state");
+            // Clean up streaming state immediately so the UI reflects the abort
+            // even before the gateway sends done/error.
+            if let Some(ref id) = self.streaming_message_id.clone() {
+                if let Some(idx) = self.messages.iter().position(|m| &m.id == id) {
+                    let msg = &mut self.messages[idx];
+                    msg.is_streaming = false;
+                    // Append an aborted marker to the last text item, or create one
+                    let has_text = msg.items.iter().any(|i| matches!(i, ContentItem::Text(_)));
+                    if has_text {
+                        if let Some(last) = msg.items.last_mut() {
+                            if let ContentItem::Text(ref mut text) = last {
+                                text.push_str("\n\n⚠️  Aborted");
+                            }
+                        }
+                    } else {
+                        msg.items.push(ContentItem::Text("⚠️  Aborted".to_string()));
+                    }
+                    msg.render_dirty = true;
+                }
+            }
+            self.streaming_message_id = None;
+            self.is_processing = false;
+            self.aborted = true;
+            self.tool_outputs.clear();
             Some(ClientMessage::Abort)
         } else {
             None
@@ -851,6 +1014,25 @@ impl App {
 
     pub fn toggle_thinking(&mut self) {
         self.show_thinking = !self.show_thinking;
+    }
+
+    /// Invalidate the image cache (e.g. on terminal resize — images need re-encoding at new width).
+    pub fn invalidate_image_cache(&mut self) {
+        self.image_cache.clear();
+    }
+
+    /// Switch to a different theme at runtime.
+    pub fn set_theme(&mut self, name: &str) -> bool {
+        if let Some(theme) = Theme::by_name(name) {
+            self.theme = theme;
+            // Mark all messages dirty so they re-render with new theme
+            for msg in &mut self.messages {
+                msg.render_dirty = true;
+            }
+            true
+        } else {
+            false
+        }
     }
 
     pub fn toggle_help(&mut self) {
@@ -1228,6 +1410,7 @@ impl App {
                             is_streaming: false,
                             render_cache: Vec::new(),
                             render_dirty: true,
+                            item_line_offsets: Vec::new(),
                         };
                         self.messages.push(msg);
                     }
@@ -1310,6 +1493,10 @@ impl App {
                     }
 
                     if !items.is_empty() {
+                        // Each assistant entry from the session is one LLM generation cycle.
+                        // Don't merge consecutive entries — each gets its own message so
+                        // the natural order (thinking → text → toolCall → tool call output)
+                        // is preserved per cycle, matching the streaming UX.
                         let msg = ChatMessage {
                             id,
                             role: MessageRole::Assistant,
@@ -1318,6 +1505,7 @@ impl App {
                             is_streaming: false,
                             render_cache: Vec::new(),
                             render_dirty: true,
+                            item_line_offsets: Vec::new(),
                         };
                         self.messages.push(msg);
                     }
@@ -1453,6 +1641,7 @@ impl App {
             }
         }
         self.is_processing = false;
+        self.aborted = false;
         self.tool_outputs.clear();
     }
 }

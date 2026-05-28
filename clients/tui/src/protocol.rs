@@ -21,7 +21,7 @@ pub enum ClientMessage {
     #[serde(rename = "get_models")]
     GetModels,
     #[serde(rename = "switch_model")]
-    SwitchModel { provider: String, model_id: String },
+    SwitchModel { provider: String, #[serde(rename = "modelId")] model_id: String },
     #[serde(rename = "command")]
     Command { command: String, args: Option<Vec<String>> },
     #[serde(rename = "ping")]

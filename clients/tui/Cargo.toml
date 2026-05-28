@@ -12,9 +12,11 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures = "0.3"
 
 # TUI framework
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-textarea = "0.7"
+ratatui-image = { version = "11.0", default-features = false, features = ["image-defaults"] }
+image = "0.25"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
