@@ -51,7 +51,6 @@ pub struct ThemeColors {
     pub connecting: Color,
     pub error_text: Color,
     pub thinking: Color,
-    pub active_bar: Color,
 
     // Selection / highlight
     pub selected_fg: Color,
@@ -93,11 +92,63 @@ pub struct Theme {
 }
 
 impl Theme {
-    // ── Built-in: Default (current dark design) ────────────────────────────
+    // ── Built-in: Foundry (default dark design) ────────────────────────────
 
     pub fn default() -> Self {
         Self {
-            name: "default",
+            name: "foundry",
+            colors: ThemeColors {
+                // Mirrors the Web UI foundry palette: coal, steel, forge amber.
+                user_header: Color::Rgb(232, 168, 56),
+                assistant_header: Color::Rgb(138, 138, 149),
+                system_header: Color::Rgb(61, 143, 181),
+
+                user_bg: Color::Rgb(14, 14, 17),
+                code_bg: Color::Rgb(20, 20, 24),
+                popup_bg: Color::Rgb(8, 8, 10),
+                picker_bg: Color::Rgb(8, 8, 10),
+                help_bg: Color::Rgb(8, 8, 10),
+
+                text: Color::Rgb(212, 212, 216),
+                muted: Color::Rgb(107, 107, 117),
+                accent: Color::Rgb(232, 168, 56),
+
+                connected: Color::Rgb(45, 138, 78),
+                disconnected: Color::Rgb(194, 59, 34),
+                connecting: Color::Rgb(232, 168, 56),
+                error_text: Color::Rgb(194, 59, 34),
+                thinking: Color::Rgb(120, 113, 108),
+
+                thinking_bg: Color::Rgb(14, 14, 17),
+                tool_bg: Color::Rgb(14, 14, 17),
+
+                selected_fg: Color::Rgb(10, 10, 12),
+                selected_bg: Color::Rgb(232, 168, 56),
+
+                code_fg: Color::Rgb(212, 212, 216),
+
+                tool_name: Color::Rgb(232, 168, 56),
+                tool_output: Color::Rgb(138, 138, 149),
+                tool_error: Color::Rgb(194, 59, 34),
+
+                image_text: Color::Rgb(61, 143, 181),
+
+                popup_border: Color::Rgb(51, 51, 61),
+                input_fg: Color::Rgb(228, 228, 231),
+                input_placeholder: Color::Rgb(70, 70, 79),
+            },
+            message_block: MessageBlockStyle::AccentBar,
+            borders: BorderTreatment::Subtle,
+            active_bar_char: "▌",
+            input_prefix: "> ",
+        }
+    }
+
+    // ── Built-in: Classic (original dark terminal design) ──────────────────
+
+    pub fn classic() -> Self {
+        Self {
+            name: "classic",
             colors: ThemeColors {
                 user_header: Color::Blue,
                 assistant_header: Color::Green,
@@ -118,7 +169,6 @@ impl Theme {
                 connecting: Color::Yellow,
                 error_text: Color::Red,
                 thinking: Color::Magenta,
-                active_bar: Color::Rgb(184, 122, 48),
 
                 thinking_bg: Color::Rgb(30, 27, 36),
                 tool_bg: Color::Rgb(27, 28, 36),
@@ -153,42 +203,41 @@ impl Theme {
             colors: ThemeColors {
                 // Kanagawa Paper palette
                 // bg: #f4f0e0 (warm cream), fg: #1e1e2e (near black)
-                user_header: Color::Rgb(46, 125, 233),      // blue
+                user_header: Color::Rgb(46, 125, 233), // blue
                 assistant_header: Color::Rgb(118, 148, 106), // green
-                system_header: Color::Rgb(228, 104, 77),     // coral
+                system_header: Color::Rgb(228, 104, 77), // coral
 
-                user_bg: Color::Rgb(238, 233, 216),          // slightly darker paper
-                code_bg: Color::Rgb(230, 224, 206),          // darker paper
-                popup_bg: Color::Rgb(240, 235, 218),         // warm popup bg
+                user_bg: Color::Rgb(238, 233, 216), // slightly darker paper
+                code_bg: Color::Rgb(230, 224, 206), // darker paper
+                popup_bg: Color::Rgb(240, 235, 218), // warm popup bg
                 picker_bg: Color::Rgb(240, 235, 218),
                 help_bg: Color::Rgb(240, 235, 218),
 
-                text: Color::Rgb(30, 30, 46),                // near black
-                muted: Color::Rgb(166, 160, 160),            // kanagawa comment
-                accent: Color::Rgb(106, 149, 137),           // kanagawa cyan
+                text: Color::Rgb(30, 30, 46),      // near black
+                muted: Color::Rgb(166, 160, 160),  // kanagawa comment
+                accent: Color::Rgb(106, 149, 137), // kanagawa cyan
 
-                connected: Color::Rgb(118, 148, 106),        // green
-                disconnected: Color::Rgb(195, 64, 67),       // kanagawa red
-                connecting: Color::Rgb(220, 165, 97),        // kanagawa yellow
-                error_text: Color::Rgb(195, 64, 67),         // kanagawa red
-                thinking: Color::Rgb(149, 127, 184),         // kanagawa purple
-                active_bar: Color::Rgb(228, 104, 77),        // coral
+                connected: Color::Rgb(118, 148, 106),  // green
+                disconnected: Color::Rgb(195, 64, 67), // kanagawa red
+                connecting: Color::Rgb(220, 165, 97),  // kanagawa yellow
+                error_text: Color::Rgb(195, 64, 67),   // kanagawa red
+                thinking: Color::Rgb(149, 127, 184),   // kanagawa purple
 
-                thinking_bg: Color::Rgb(238, 233, 216),        // slightly darker paper
-                tool_bg: Color::Rgb(235, 231, 210),            // slightly darker still
+                thinking_bg: Color::Rgb(238, 233, 216), // slightly darker paper
+                tool_bg: Color::Rgb(235, 231, 210),     // slightly darker still
 
-                selected_fg: Color::Rgb(244, 240, 224),      // paper
-                selected_bg: Color::Rgb(106, 149, 137),      // cyan
+                selected_fg: Color::Rgb(244, 240, 224), // paper
+                selected_bg: Color::Rgb(106, 149, 137), // cyan
 
-                code_fg: Color::Rgb(118, 148, 106),          // green
+                code_fg: Color::Rgb(118, 148, 106), // green
 
-                tool_name: Color::Rgb(106, 149, 137),        // cyan
-                tool_output: Color::Rgb(80, 80, 90),         // dark gray
-                tool_error: Color::Rgb(195, 64, 67),         // red
+                tool_name: Color::Rgb(106, 149, 137), // cyan
+                tool_output: Color::Rgb(80, 80, 90),  // dark gray
+                tool_error: Color::Rgb(195, 64, 67),  // red
 
-                image_text: Color::Rgb(46, 125, 233),        // blue
+                image_text: Color::Rgb(46, 125, 233), // blue
 
-                popup_border: Color::Rgb(106, 149, 137),     // cyan
+                popup_border: Color::Rgb(106, 149, 137), // cyan
                 input_fg: Color::Rgb(30, 30, 46),
                 input_placeholder: Color::Rgb(166, 160, 160),
             },
@@ -204,7 +253,8 @@ impl Theme {
     /// Resolve a theme by name.
     pub fn by_name(name: &str) -> Option<Self> {
         match name {
-            "default" => Some(Self::default()),
+            "default" | "foundry" => Some(Self::default()),
+            "classic" => Some(Self::classic()),
             "paper" => Some(Self::paper()),
             _ => None,
         }
@@ -212,6 +262,6 @@ impl Theme {
 
     /// Return all available theme names, in display order.
     pub fn all_names() -> &'static [&'static str] {
-        &["default", "paper"]
+        &["foundry", "classic", "paper"]
     }
 }

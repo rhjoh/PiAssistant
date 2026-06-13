@@ -1,5 +1,5 @@
-use std::fmt;
 use std::collections::HashMap;
+use std::fmt;
 
 use chrono::Local;
 use ratatui::layout::{Rect, Size};
@@ -9,9 +9,7 @@ use ratatui_image::protocol::Protocol;
 use ratatui_image::Resize;
 use tracing::{debug, info, warn};
 
-use crate::protocol::{
-    ClientMessage, ModelInfo, ServerMessage, TokenUsage, ToolOutputData,
-};
+use crate::protocol::{ClientMessage, ModelInfo, ServerMessage, TokenUsage, ToolOutputData};
 use crate::theme::Theme;
 use crate::websocket::WsEvent;
 
@@ -91,12 +89,36 @@ pub struct SlashCommand {
 
 /// All available slash commands (must stay in sync with gateway CommandRegistry).
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand { name: "status", description: "Show gateway status and current model", usage: "/status" },
-    SlashCommand { name: "model", description: "View or change the current AI model", usage: "/model [list|<number>]" },
-    SlashCommand { name: "session", description: "Show session info and stats", usage: "/session" },
-    SlashCommand { name: "new", description: "Archive session and start fresh", usage: "/new" },
-    SlashCommand { name: "clear", description: "Clear the chat view", usage: "/clear" },
-    SlashCommand { name: "theme", description: "Switch color theme", usage: "/theme [<name>]" },
+    SlashCommand {
+        name: "status",
+        description: "Show gateway status and current model",
+        usage: "/status",
+    },
+    SlashCommand {
+        name: "model",
+        description: "View or change the current AI model",
+        usage: "/model [list|<number>]",
+    },
+    SlashCommand {
+        name: "session",
+        description: "Show session info and stats",
+        usage: "/session",
+    },
+    SlashCommand {
+        name: "new",
+        description: "Archive session and start fresh",
+        usage: "/new",
+    },
+    SlashCommand {
+        name: "clear",
+        description: "Clear the chat view",
+        usage: "/clear",
+    },
+    SlashCommand {
+        name: "theme",
+        description: "Switch color theme",
+        usage: "/theme [<name>]",
+    },
 ];
 
 /// State for the slash-command autocomplete popup.
@@ -154,8 +176,10 @@ pub struct App {
     pub error_message: Option<String>,
     pub show_help: bool,
     pub show_thinking: bool,
+    pub show_tools: bool,
     pub render_cache_width: Option<u16>,
     pub render_cache_show_thinking: bool,
+    pub render_cache_show_tools: bool,
     /// Spinner animation frame counter (cycles through spinner chars)
     pub spinner_frame: usize,
     // Track streaming state
@@ -218,8 +242,10 @@ impl App {
             error_message: None,
             show_help: false,
             show_thinking: true,
+            show_tools: true,
             render_cache_width: None,
             render_cache_show_thinking: true,
+            render_cache_show_tools: true,
             spinner_frame: 0,
             streaming_message_id: None,
             aborted: false,
@@ -329,7 +355,10 @@ impl App {
             ServerMessage::Done { data } => {
                 if let Some(cmd) = self.pending_command.take() {
                     // Command response — render as system message instead of assistant turn
-                    info!("Done received for command /{} — rendering as system message", cmd);
+                    info!(
+                        "Done received for command /{} — rendering as system message",
+                        cmd
+                    );
                     let text = if !self.command_response_buffer.is_empty() {
                         std::mem::take(&mut self.command_response_buffer)
                     } else {
@@ -374,7 +403,8 @@ impl App {
                         self.token_usage.cache_write += usage.cache_write;
                         self.token_usage.total += usage.total;
                         if let Some(cost) = usage.cost {
-                            self.token_usage.cost = Some(self.token_usage.cost.unwrap_or(0.0) + cost);
+                            self.token_usage.cost =
+                                Some(self.token_usage.cost.unwrap_or(0.0) + cost);
                         }
                     }
                 }
@@ -604,7 +634,13 @@ impl App {
         }
     }
 
-    fn add_tool_call(&mut self, id: &str, name: &str, args: &Option<serde_json::Value>, label: &str) {
+    fn add_tool_call(
+        &mut self,
+        id: &str,
+        name: &str,
+        args: &Option<serde_json::Value>,
+        label: &str,
+    ) {
         if self.aborted {
             return;
         }
@@ -628,8 +664,12 @@ impl App {
     }
 
     fn update_tool_output(&mut self, data: &ToolOutputData) {
-        let Some(msg_id) = &self.streaming_message_id else { return };
-        let Some(idx) = self.messages.iter().position(|m| &m.id == msg_id) else { return };
+        let Some(msg_id) = &self.streaming_message_id else {
+            return;
+        };
+        let Some(idx) = self.messages.iter().position(|m| &m.id == msg_id) else {
+            return;
+        };
         let msg = &mut self.messages[idx];
 
         let output = if data.truncated.unwrap_or(false) {
@@ -639,13 +679,19 @@ impl App {
         };
 
         // Store in our tracking map
-        self.tool_outputs.insert(data.tool_call_id.clone(), output.clone());
+        self.tool_outputs
+            .insert(data.tool_call_id.clone(), output.clone());
 
         // Merge output directly into the matching ToolCall item.
-        if let Some(tool_idx) = msg.items.iter().position(|item| matches!(item,
-            ContentItem::ToolCall { id, .. } if id == &data.tool_call_id
-        )) {
-            if let ContentItem::ToolCall { result, is_error, .. } = &mut msg.items[tool_idx] {
+        if let Some(tool_idx) = msg.items.iter().position(|item| {
+            matches!(item,
+                ContentItem::ToolCall { id, .. } if id == &data.tool_call_id
+            )
+        }) {
+            if let ContentItem::ToolCall {
+                result, is_error, ..
+            } = &mut msg.items[tool_idx]
+            {
                 *result = Some(output);
                 *is_error = false;
                 msg.render_dirty = true;
@@ -655,12 +701,19 @@ impl App {
 
     fn finalize_tool_call(&mut self, tool_call_id: &str, tool_name: &str) {
         let _ = tool_name;
-        let Some(msg_id) = &self.streaming_message_id else { return };
-        let Some(idx) = self.messages.iter().position(|m| &m.id == msg_id) else { return };
+        let Some(msg_id) = &self.streaming_message_id else {
+            return;
+        };
+        let Some(idx) = self.messages.iter().position(|m| &m.id == msg_id) else {
+            return;
+        };
         let msg = &mut self.messages[idx];
 
         for item in &mut msg.items {
-            if let ContentItem::ToolCall { id, is_complete, .. } = item {
+            if let ContentItem::ToolCall {
+                id, is_complete, ..
+            } = item
+            {
                 if id == tool_call_id {
                     *is_complete = true;
                     msg.render_dirty = true;
@@ -754,7 +807,8 @@ impl App {
                 let has_text = msg.items.iter().any(|i| matches!(i, ContentItem::Text(_)));
 
                 if !has_text && !final_text.is_empty() {
-                    msg.items.push(ContentItem::Text(sanitize_display_text(final_text)));
+                    msg.items
+                        .push(ContentItem::Text(sanitize_display_text(final_text)));
                 }
 
                 // Mark incomplete thinking blocks as complete; remove empty ones
@@ -850,15 +904,35 @@ impl App {
                 match arg {
                     None | Some("") | Some("list") => {
                         let names = Theme::all_names();
-                        let list = names.iter().map(|n| format!("  • {} {}", n, if *n == self.theme.name {"← current"} else {""})).collect::<Vec<_>>().join("\n");
-                        self.add_system_message(&format!("Available themes:\n{}\n\nUsage: /theme <name>", list));
+                        let list = names
+                            .iter()
+                            .map(|n| {
+                                format!(
+                                    "  • {} {}",
+                                    n,
+                                    if *n == self.theme.name {
+                                        "← current"
+                                    } else {
+                                        ""
+                                    }
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.add_system_message(&format!(
+                            "Available themes:\n{}\n\nUsage: /theme <name>",
+                            list
+                        ));
                     }
                     Some(name) => {
                         if self.set_theme(name) {
                             self.add_system_message(&format!("Switched to theme: {}", name));
                         } else {
                             let names = Theme::all_names().join(", ");
-                            self.add_system_message(&format!("Unknown theme \"{}\". Available: {}", name, names));
+                            self.add_system_message(&format!(
+                                "Unknown theme \"{}\". Available: {}",
+                                name, names
+                            ));
                         }
                     }
                 }
@@ -874,9 +948,7 @@ impl App {
             // Normal prompt — clear any stale command state
             self.pending_command = None;
             self.command_response_buffer.clear();
-            ClientMessage::Prompt {
-                message: text,
-            }
+            ClientMessage::Prompt { message: text }
         };
 
         self.input_text.clear();
@@ -1016,6 +1088,10 @@ impl App {
         self.show_thinking = !self.show_thinking;
     }
 
+    pub fn toggle_tools(&mut self) {
+        self.show_tools = !self.show_tools;
+    }
+
     /// Invalidate the image cache (e.g. on terminal resize — images need re-encoding at new width).
     pub fn invalidate_image_cache(&mut self) {
         self.image_cache.clear();
@@ -1119,9 +1195,11 @@ impl App {
         });
         // If we already know which model is current, pre-select it in the list.
         if let Some(ref cur) = current {
-            if let Some(idx) = self.available_models.iter().position(|m| {
-                m.provider == cur.provider && m.id == cur.id
-            }) {
+            if let Some(idx) = self
+                .available_models
+                .iter()
+                .position(|m| m.provider == cur.provider && m.id == cur.id)
+            {
                 if let Some(ref mut picker) = self.model_picker {
                     picker.selected = idx;
                 }
@@ -1155,7 +1233,9 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
             }
-            picker.selected = picker.selected.min(picker.filtered_indices.len().saturating_sub(1));
+            picker.selected = picker
+                .selected
+                .min(picker.filtered_indices.len().saturating_sub(1));
         }
     }
 
@@ -1388,7 +1468,10 @@ impl App {
         info!("Loading {} history messages", raw_messages.len());
 
         for entry in raw_messages {
-            let role = entry.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+            let role = entry
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("unknown");
 
             match role {
                 "user" => {
@@ -1396,8 +1479,13 @@ impl App {
                         if is_heartbeat_prompt(&content) {
                             continue;
                         }
-                        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("hist").to_string();
-                        let timestamp = entry.get("timestamp")
+                        let id = entry
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("hist")
+                            .to_string();
+                        let timestamp = entry
+                            .get("timestamp")
                             .and_then(|v| v.as_str())
                             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                             .map(|dt| dt.with_timezone(&chrono::Local))
@@ -1416,8 +1504,13 @@ impl App {
                     }
                 }
                 "assistant" => {
-                    let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("hist").to_string();
-                    let timestamp = entry.get("timestamp")
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("hist")
+                        .to_string();
+                    let timestamp = entry
+                        .get("timestamp")
                         .and_then(|v| v.as_str())
                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&chrono::Local))
@@ -1426,17 +1519,22 @@ impl App {
                     let mut items = Vec::new();
                     if let Some(content) = entry.get("content").and_then(|c| c.as_array()) {
                         for block in content {
-                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            let block_type =
+                                block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                             match block_type {
                                 "text" => {
                                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                         if !text.is_empty() {
-                                            items.push(ContentItem::Text(sanitize_display_text(text)));
+                                            items.push(ContentItem::Text(sanitize_display_text(
+                                                text,
+                                            )));
                                         }
                                     }
                                 }
                                 "thinking" => {
-                                    if let Some(thinking) = block.get("thinking").and_then(|t| t.as_str()) {
+                                    if let Some(thinking) =
+                                        block.get("thinking").and_then(|t| t.as_str())
+                                    {
                                         if !thinking.is_empty() {
                                             items.push(ContentItem::Thinking {
                                                 thinking_id: None,
@@ -1450,11 +1548,21 @@ impl App {
                                     // History can have either format:
                                     // - Raw session: { type: "toolCall", id: "call_x", name: "bash", arguments: {...} }
                                     // - Gateway enriched: { type: "toolCall", toolCallId: "call_x", toolName: "bash", label: "..." }
-                                    let tool_id = block.get("toolCallId").or_else(|| block.get("id"))
-                                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let tool_name = block.get("toolName").or_else(|| block.get("name"))
-                                        .and_then(|v| v.as_str()).unwrap_or("tool").to_string();
-                                    let label = block.get("label").and_then(|v| v.as_str())
+                                    let tool_id = block
+                                        .get("toolCallId")
+                                        .or_else(|| block.get("id"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let tool_name = block
+                                        .get("toolName")
+                                        .or_else(|| block.get("name"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    let label = block
+                                        .get("label")
+                                        .and_then(|v| v.as_str())
                                         .map(sanitize_display_text)
                                         .unwrap_or_else(|| {
                                             // Build a label from arguments
@@ -1462,13 +1570,26 @@ impl App {
                                                 if let Some(obj) = args.as_object() {
                                                     if let Some(first_val) = obj.values().next() {
                                                         if let Some(s) = first_val.as_str() {
-                                                            if s.len() > 60 { format!("{}...", &s[..57]) } else { s.to_string() }
-                                                        } else { first_val.to_string() }
-                                                    } else { String::new() }
-                                                } else { String::new() }
-                                            } else { String::new() }
+                                                            if s.len() > 60 {
+                                                                format!("{}...", &s[..57])
+                                                            } else {
+                                                                s.to_string()
+                                                            }
+                                                        } else {
+                                                            first_val.to_string()
+                                                        }
+                                                    } else {
+                                                        String::new()
+                                                    }
+                                                } else {
+                                                    String::new()
+                                                }
+                                            } else {
+                                                String::new()
+                                            }
                                         });
-                                    let args_str = block.get("arguments")
+                                    let args_str = block
+                                        .get("arguments")
                                         .map(|a| sanitize_display_text(&a.to_string()))
                                         .unwrap_or_default();
                                     items.push(ContentItem::ToolCall {
@@ -1512,13 +1633,25 @@ impl App {
                 }
                 "toolResult" => {
                     // Tool results come as top-level fields
-                    let tool_call_id = entry.get("toolCallId").or_else(|| entry.get("tool_call_id"))
-                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let tool_name = entry.get("toolName").or_else(|| entry.get("tool_name"))
-                        .and_then(|v| v.as_str()).unwrap_or("tool").to_string();
-                    let is_error = entry.get("isError").or_else(|| entry.get("is_error"))
-                        .and_then(|v| v.as_bool()).unwrap_or(false);
-                    let content = entry.get("content")
+                    let tool_call_id = entry
+                        .get("toolCallId")
+                        .or_else(|| entry.get("tool_call_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tool_name = entry
+                        .get("toolName")
+                        .or_else(|| entry.get("tool_name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("tool")
+                        .to_string();
+                    let is_error = entry
+                        .get("isError")
+                        .or_else(|| entry.get("is_error"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let content = entry
+                        .get("content")
                         .and_then(|c| c.as_array())
                         .map(|arr| {
                             arr.iter()
@@ -1534,7 +1667,13 @@ impl App {
                     if let Some(last) = self.messages.last_mut() {
                         if last.role == MessageRole::Assistant {
                             for item in &mut last.items {
-                                if let ContentItem::ToolCall { id, result: res, is_error: err_flag, .. } = item {
+                                if let ContentItem::ToolCall {
+                                    id,
+                                    result: res,
+                                    is_error: err_flag,
+                                    ..
+                                } = item
+                                {
                                     if id == &tool_call_id {
                                         *res = Some(sanitize_display_text(&content));
                                         *err_flag = is_error;
@@ -1583,10 +1722,14 @@ impl App {
         }
 
         if let Some(arr) = content.as_array() {
-            let texts: Vec<String> = arr.iter()
+            let texts: Vec<String> = arr
+                .iter()
                 .filter_map(|block| {
                     if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        block.get("text").and_then(|t| t.as_str()).map(sanitize_display_text)
+                        block
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .map(sanitize_display_text)
                     } else {
                         None
                     }
@@ -1615,7 +1758,8 @@ impl App {
 
         // Last turn tokens (not cumulative — shows cost of the last response)
         if self.token_usage.total > 0 {
-            parts.push(format!("↑{} ↓{}",
+            parts.push(format!(
+                "↑{} ↓{}",
                 format_number(self.token_usage.input),
                 format_number(self.token_usage.output),
             ));

@@ -24,7 +24,12 @@ fn find_last_copyable_text(app: &App) -> Result<String> {
         for item in &msg.items {
             match item {
                 ContentItem::Text(text) => parts.push(text.clone()),
-                ContentItem::ToolCall { label, result, is_error, .. } => {
+                ContentItem::ToolCall {
+                    label,
+                    result,
+                    is_error,
+                    ..
+                } => {
                     if let Some(content) = result {
                         let lang = if *is_error { "" } else { "" };
                         parts.push(format!("{}\n```{}\n{}\n```", label, lang, content));

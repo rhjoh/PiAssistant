@@ -10,7 +10,9 @@ use crate::theme::{BorderTreatment, MessageBlockStyle, Theme};
 use crate::wrap::word_wrap_lines;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, ChatMessage, CommandPopup, ConnectionState, ContentItem, MessageRole, ModelPicker};
+use crate::app::{
+    App, ChatMessage, CommandPopup, ConnectionState, ContentItem, MessageRole, ModelPicker,
+};
 
 /// Main render function — draws the entire UI
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -69,10 +71,16 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             left_spans.push(Span::styled("Connected", Style::default().fg(c.connected)));
         }
         ConnectionState::Disconnected => {
-            left_spans.push(Span::styled("Disconnected", Style::default().fg(c.disconnected)));
+            left_spans.push(Span::styled(
+                "Disconnected",
+                Style::default().fg(c.disconnected),
+            ));
         }
         ConnectionState::Connecting => {
-            left_spans.push(Span::styled("Connecting...", Style::default().fg(c.connecting)));
+            left_spans.push(Span::styled(
+                "Connecting...",
+                Style::default().fg(c.connecting),
+            ));
         }
         ConnectionState::Error => {
             left_spans.push(Span::styled("Error", Style::default().fg(c.error_text)));
@@ -109,7 +117,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     if app.is_input_focused {
         right_spans.push(Span::styled("Esc:navigate", Style::default().fg(c.muted)));
     } else {
-        right_spans.push(Span::styled("i:input ?:help q/Ctrl+D:quit", Style::default().fg(c.muted)));
+        right_spans.push(Span::styled(
+            "i:input ?:help q/Ctrl+D:quit",
+            Style::default().fg(c.muted),
+        ));
     }
 
     let left = Paragraph::new(Line::from(left_spans));
@@ -118,8 +129,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Give left side 70% of width, right side 30%
     let left_width = (area.width * 7) / 10;
     let right_width = area.width.saturating_sub(left_width);
-    let left_area = Rect { x: area.x, y: area.y, width: left_width, height: area.height };
-    let right_area = Rect { x: area.x + left_width, y: area.y, width: right_width, height: area.height };
+    let left_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: left_width,
+        height: area.height,
+    };
+    let right_area = Rect {
+        x: area.x + left_width,
+        y: area.y,
+        width: right_width,
+        height: area.height,
+    };
 
     frame.render_widget(left, left_area);
     frame.render_widget(right, right_area);
@@ -153,20 +174,31 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_width = inner.width.saturating_sub(2); // small margin
     let invalidate_all = app.render_cache_width != Some(max_width)
         || app.render_cache_show_thinking != app.show_thinking;
+    let invalidate_all = invalidate_all || app.render_cache_show_tools != app.show_tools;
     if invalidate_all {
         app.render_cache_width = Some(max_width);
         app.render_cache_show_thinking = app.show_thinking;
+        app.render_cache_show_tools = app.show_tools;
         app.invalidate_image_cache(); // re-encode images at new width
     }
 
     let mut all_lines: Vec<Line> = Vec::new();
     let mut message_start_lines: Vec<usize> = Vec::new();
     let show_thinking = app.show_thinking;
+    let show_tools = app.show_tools;
     let spinner = app.spinner_char();
     let theme = app.theme; // Copy for borrow-free access during build
     for msg in &mut app.messages {
         if invalidate_all || msg.render_dirty {
-            let (cache, offsets) = build_message_lines(msg, max_width, show_thinking, spinner, &app.image_cache, &theme);
+            let (cache, offsets) = build_message_lines(
+                msg,
+                max_width,
+                show_thinking,
+                show_tools,
+                spinner,
+                &app.image_cache,
+                &theme,
+            );
             msg.render_cache = cache;
             msg.item_line_offsets = offsets;
             msg.render_dirty = false;
@@ -189,18 +221,18 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(Clear, inner);
 
-    let (top_padding, mut visible_lines): (usize, Vec<Line>) = if total_lines <= viewport_height {
+    let mut visible_lines: Vec<Line> = if total_lines <= viewport_height {
         let padding = viewport_height.saturating_sub(total_lines);
         let mut padded: Vec<Line> = (0..padding).map(|_| Line::from("")).collect();
         padded.extend(all_lines);
-        (padding, padded)
+        padded
     } else {
-        (0, all_lines
+        all_lines
             .iter()
             .skip(start)
             .take(viewport_height)
             .cloned()
-            .collect())
+            .collect()
     };
 
     if visible_lines.len() < viewport_height {
@@ -209,15 +241,16 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     app.update_message_viewport(
         inner,
-        visible_lines
-            .iter()
-            .map(line_to_plain_text)
-            .collect(),
+        visible_lines.iter().map(line_to_plain_text).collect(),
     );
 
     if let Some((start_sel, end_sel)) = app.selection_bounds() {
         for (row, line) in visible_lines.iter_mut().enumerate() {
-            let start_col = if row == start_sel.row { start_sel.col } else { 0 };
+            let start_col = if row == start_sel.row {
+                start_sel.col
+            } else {
+                0
+            };
             let end_col = if row == end_sel.row {
                 end_sel.col.saturating_add(1)
             } else {
@@ -230,39 +263,9 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    let active_message_rows = active_message_visible_rows(
-        app,
-        &message_start_lines,
-        total_lines,
-        viewport_height,
-        start,
-        top_padding,
-        visible_lines.len(),
-    );
-    if let Some((active_start_row, active_end_row)) = active_message_rows {
-        for row in active_start_row..=active_end_row {
-            visible_lines[row] = indent_active_message_line(visible_lines[row].clone());
-        }
-    }
-
     let paragraph = Paragraph::new(Text::from(std::mem::take(&mut visible_lines)));
 
     frame.render_widget(paragraph, inner);
-
-    if let Some((active_start_row, active_end_row)) = active_message_rows {
-        let bar_style = Style::default().fg(app.theme.colors.active_bar);
-        for row in active_start_row..=active_end_row {
-            frame.render_widget(
-                Paragraph::new(app.theme.active_bar_char).style(bar_style),
-                Rect {
-                    x: inner.x,
-                    y: inner.y + row as u16,
-                    width: 1,
-                    height: 1,
-                },
-            );
-        }
-    }
 
     // ── Second pass: overlay image widgets at their calculated positions ──
     if !app.image_cache.is_empty() {
@@ -300,10 +303,7 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
                             width: proto.size().width.min(inner.width.saturating_sub(4)),
                             height,
                         };
-                        frame.render_widget(
-                            ratatui_image::Image::new(proto),
-                            rect,
-                        );
+                        frame.render_widget(ratatui_image::Image::new(proto), rect);
                     }
                 }
             }
@@ -312,24 +312,28 @@ fn render_message_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Scroll indicators (small arrows in the margin)
     if start > 0 && inner.height > 0 {
-        let indicator = Paragraph::new("▲")
-            .style(Style::default().fg(c.muted));
-        frame.render_widget(indicator, Rect {
-            x: inner.x + inner.width.saturating_sub(1),
-            y: inner.y + 1,
-            width: 1,
-            height: 1,
-        });
+        let indicator = Paragraph::new("▲").style(Style::default().fg(c.muted));
+        frame.render_widget(
+            indicator,
+            Rect {
+                x: inner.x + inner.width.saturating_sub(1),
+                y: inner.y + 1,
+                width: 1,
+                height: 1,
+            },
+        );
     }
     if scroll_from_bottom > 0 && inner.height > 0 {
-        let indicator = Paragraph::new("▼")
-            .style(Style::default().fg(c.connecting));
-        frame.render_widget(indicator, Rect {
-            x: inner.x + inner.width.saturating_sub(1),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        });
+        let indicator = Paragraph::new("▼").style(Style::default().fg(c.connecting));
+        frame.render_widget(
+            indicator,
+            Rect {
+                x: inner.x + inner.width.saturating_sub(1),
+                y: inner.y + inner.height.saturating_sub(1),
+                width: 1,
+                height: 1,
+            },
+        );
     }
 }
 
@@ -339,6 +343,7 @@ fn build_message_lines(
     msg: &ChatMessage,
     max_width: u16,
     show_thinking: bool,
+    show_tools: bool,
     spinner: &str,
     image_cache: &std::collections::HashMap<String, ratatui_image::protocol::Protocol>,
     theme: &Theme,
@@ -355,7 +360,12 @@ fn build_message_lines(
     // Streaming assistant: show spinner
     if msg.is_streaming && msg.role == MessageRole::Assistant {
         lines.push(Line::from(vec![
-            Span::styled("Assistant", Style::default().fg(c.assistant_header).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Assistant",
+                Style::default()
+                    .fg(c.assistant_header)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
             Span::raw(" "),
             Span::styled(spinner.to_string(), Style::default().fg(c.connecting)),
@@ -370,16 +380,36 @@ fn build_message_lines(
                 let pad_len = max_width.saturating_sub(used_width as u16);
                 lines.push(Line::from(vec![
                     Span::styled(" ", Style::default().bg(user_bg)),
-                    Span::styled("You", Style::default().fg(c.user_header).add_modifier(Modifier::BOLD).bg(user_bg)),
-                    Span::styled(timestamp_str.clone(), Style::default().fg(c.muted).bg(user_bg)),
-                    Span::styled(format!("{:<width$}", "", width = pad_len as usize), Style::default().bg(user_bg)),
+                    Span::styled(
+                        "You",
+                        Style::default()
+                            .fg(c.user_header)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(user_bg),
+                    ),
+                    Span::styled(
+                        timestamp_str.clone(),
+                        Style::default().fg(c.muted).bg(user_bg),
+                    ),
+                    Span::styled(
+                        format!("{:<width$}", "", width = pad_len as usize),
+                        Style::default().bg(user_bg),
+                    ),
                 ]));
             }
             MessageBlockStyle::AccentBar => {
                 // Left accent bar + content with subtle bg
                 lines.push(Line::from(vec![
-                    Span::styled(format!("{} ", theme.active_bar_char), Style::default().fg(c.accent)),
-                    Span::styled("You", Style::default().fg(c.user_header).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!("{} ", theme.active_bar_char),
+                        Style::default().fg(c.accent),
+                    ),
+                    Span::styled(
+                        "You",
+                        Style::default()
+                            .fg(c.user_header)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
                 ]));
             }
@@ -391,7 +421,10 @@ fn build_message_lines(
             MessageRole::User => unreachable!(), // handled above
         };
         lines.push(Line::from(vec![
-            Span::styled(name, Style::default().fg(fg_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                name,
+                Style::default().fg(fg_color).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
         ]));
     }
@@ -399,17 +432,24 @@ fn build_message_lines(
     // Content based on role
     match msg.role {
         MessageRole::User => {
-            let text: String = msg.items.iter().filter_map(|item| match item {
-                ContentItem::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect();
+            let text: String = msg
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ContentItem::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
             match theme.message_block {
                 MessageBlockStyle::FullBackground => {
                     for line in markdown_to_lines(
                         &text,
                         content_width,
                         Style::default().fg(c.text).bg(user_bg),
-                        Style::default().fg(c.system_header).bg(user_bg).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(c.system_header)
+                            .bg(user_bg)
+                            .add_modifier(Modifier::BOLD),
                         theme,
                     ) {
                         let padded = pad_render_line(line, content_width);
@@ -425,7 +465,12 @@ fn build_message_lines(
                         full_spans.extend(spans);
                         let current_width: usize = full_spans
                             .iter()
-                            .map(|span| span.content.chars().map(|ch| ch.width().unwrap_or(0)).sum::<usize>())
+                            .map(|span| {
+                                span.content
+                                    .chars()
+                                    .map(|ch| ch.width().unwrap_or(0))
+                                    .sum::<usize>()
+                            })
                             .sum();
                         if current_width < max_width as usize {
                             full_spans.push(Span::styled(
@@ -441,35 +486,44 @@ fn build_message_lines(
                         &text,
                         content_width,
                         Style::default().fg(c.text),
-                        Style::default().fg(c.system_header).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(c.system_header)
+                            .add_modifier(Modifier::BOLD),
                         theme,
                     ) {
                         let padded = pad_render_line(line, content_width);
-                        let prefix = vec![
-                            Span::styled(
-                                format!("{} ", theme.active_bar_char),
-                                Style::default().fg(c.accent),
-                            ),
-                        ];
+                        let prefix = vec![Span::styled(
+                            format!("{} ", theme.active_bar_char),
+                            Style::default().fg(c.accent),
+                        )];
                         let mut spans: Vec<Span<'static>> = prefix;
-                        spans.extend(padded.spans.into_iter().map(|s| {
-                            Span::styled(s.content.into_owned(), s.style)
-                        }));
+                        spans.extend(
+                            padded
+                                .spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                        );
                         lines.push(Line::from(spans));
                     }
                 }
             }
         }
         MessageRole::System => {
-            let text: String = msg.items.iter().filter_map(|item| match item {
-                ContentItem::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect();
+            let text: String = msg
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ContentItem::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
             lines.extend(markdown_to_lines(
                 &text,
                 content_width,
                 Style::default().fg(c.text),
-                Style::default().fg(c.system_header).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(c.system_header)
+                    .add_modifier(Modifier::BOLD),
                 theme,
             ));
         }
@@ -477,6 +531,12 @@ fn build_message_lines(
             let mut idx = 0usize;
 
             while idx < msg.items.len() {
+                if idx > 0
+                    && content_item_is_tool(&msg.items[idx - 1])
+                    && !content_item_is_tool(&msg.items[idx])
+                {
+                    lines.push(Line::from(""));
+                }
                 item_line_offsets.push(lines.len());
                 match &msg.items[idx] {
                     ContentItem::Text(text) => {
@@ -489,16 +549,30 @@ fn build_message_lines(
                         ));
                         idx += 1;
                     }
-                    ContentItem::Thinking { content, is_complete, .. } => {
+                    ContentItem::Thinking {
+                        content,
+                        is_complete,
+                        ..
+                    } => {
                         if content.is_empty() {
                             idx += 1;
                             continue;
                         }
                         if show_thinking {
-                            let label = if *is_complete { "Thought process" } else { "Thinking..." };
+                            let label = if *is_complete {
+                                "Thought process"
+                            } else {
+                                "Thinking..."
+                            };
                             lines.push(Line::from(vec![
                                 Span::styled("  ", Style::default().bg(c.thinking_bg)),
-                                Span::styled(label, Style::default().fg(c.thinking).bg(c.thinking_bg).add_modifier(Modifier::BOLD)),
+                                Span::styled(
+                                    label,
+                                    Style::default()
+                                        .fg(c.thinking)
+                                        .bg(c.thinking_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
                             ]));
                             for line in wrap_text(content, content_width.saturating_sub(4)) {
                                 lines.push(Line::from(Span::styled(
@@ -510,87 +584,177 @@ fn build_message_lines(
                             // Thinking completed but hidden — compact notification
                             lines.push(Line::from(vec![
                                 Span::styled("  ", Style::default().bg(c.thinking_bg)),
-                                Span::styled("Thought process (hidden)", Style::default().fg(c.thinking).bg(c.thinking_bg)),
+                                Span::styled(
+                                    "Thought process (hidden)",
+                                    Style::default().fg(c.thinking).bg(c.thinking_bg),
+                                ),
                             ]));
                         } else if msg.is_streaming {
                             // Active thinking, hidden — animated indicator
                             lines.push(Line::from(vec![
                                 Span::styled("  ", Style::default().bg(c.thinking_bg)),
-                                Span::styled(spinner.to_string(), Style::default().fg(c.connecting).bg(c.thinking_bg)),
+                                Span::styled(
+                                    spinner.to_string(),
+                                    Style::default().fg(c.connecting).bg(c.thinking_bg),
+                                ),
                                 Span::raw(" "),
-                                Span::styled("Thinking…", Style::default().fg(c.thinking).bg(c.thinking_bg)),
+                                Span::styled(
+                                    "Thinking…",
+                                    Style::default().fg(c.thinking).bg(c.thinking_bg),
+                                ),
                             ]));
                         }
                         idx += 1;
                     }
-                    ContentItem::ToolCall { name, label, args, result, is_complete, is_error, .. } => {
-                        let preview = tool_preview(name, label, args, content_width.saturating_sub(4) as usize);
-                        let body_color = if *is_error { c.tool_error } else { c.tool_output };
+                    ContentItem::ToolCall {
+                        name,
+                        label,
+                        args,
+                        result,
+                        is_complete,
+                        is_error,
+                        ..
+                    } => {
+                        let preview = tool_preview(
+                            name,
+                            label,
+                            args,
+                            content_width.saturating_sub(4) as usize,
+                        );
+                        let body_color = if *is_error {
+                            c.tool_error
+                        } else {
+                            c.tool_output
+                        };
 
                         // Spacing before tool block
                         lines.push(Line::from(""));
 
                         // Strip tool name from preview if it's already there (e.g. "read /path" → "/path")
-                        let stripped = preview.strip_prefix(&format!("{} ", name)).unwrap_or(&preview);
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("  {}  ", name),
-                                Style::default().fg(c.tool_name).bg(c.tool_bg).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                stripped.to_string(),
-                                Style::default().fg(c.text).bg(c.tool_bg).add_modifier(Modifier::BOLD),
-                            ),
-                        ]));
+                        let stripped = preview
+                            .strip_prefix(&format!("{} ", name))
+                            .unwrap_or(&preview);
+                        let status = if show_tools {
+                            ""
+                        } else if *is_complete || result.is_some() {
+                            "  collapsed"
+                        } else {
+                            "  running"
+                        };
+                        lines.push(pad_render_line_with_style(
+                            Line::from(vec![
+                                Span::styled(
+                                    format!("  {}  ", name),
+                                    Style::default()
+                                        .fg(c.tool_name)
+                                        .bg(c.tool_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    stripped.to_string(),
+                                    Style::default()
+                                        .fg(c.text)
+                                        .bg(c.tool_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(status, Style::default().fg(c.muted).bg(c.tool_bg)),
+                            ]),
+                            max_width,
+                            Style::default().bg(c.tool_bg),
+                        ));
 
                         // Output (live-updated inline)
-                        if let Some(content) = result {
-                            let wrapped = wrap_text(content, content_width.saturating_sub(8));
-                            let max_lines = 10;
-                            for line in wrapped.iter().take(max_lines) {
-                                lines.push(Line::from(Span::styled(
-                                    format!("      {}", line),
-                                    Style::default().fg(body_color).bg(c.tool_bg),
-                                )));
+                        if show_tools {
+                            if let Some(content) = result {
+                                let wrapped = wrap_text(content, content_width.saturating_sub(8));
+                                let max_lines = 10;
+                                for line in wrapped.iter().take(max_lines) {
+                                    lines.push(pad_render_line_with_style(
+                                        Line::from(Span::styled(
+                                            format!("      {}", line),
+                                            Style::default().fg(body_color).bg(c.tool_bg),
+                                        )),
+                                        max_width,
+                                        Style::default().bg(c.tool_bg),
+                                    ));
+                                }
+                                if wrapped.len() > max_lines {
+                                    lines.push(pad_render_line_with_style(
+                                        Line::from(Span::styled(
+                                            "      ... (truncated)".to_string(),
+                                            Style::default().fg(c.muted).bg(c.tool_bg),
+                                        )),
+                                        max_width,
+                                        Style::default().bg(c.tool_bg),
+                                    ));
+                                }
+                            } else if msg.is_streaming && !*is_complete {
+                                // Still running — show a subtle spinner hint
+                                lines.push(pad_render_line_with_style(
+                                    Line::from(Span::styled(
+                                        "      …".to_string(),
+                                        Style::default().fg(c.muted).bg(c.tool_bg),
+                                    )),
+                                    max_width,
+                                    Style::default().bg(c.tool_bg),
+                                ));
                             }
-                            if wrapped.len() > max_lines {
-                                lines.push(Line::from(Span::styled(
-                                    "      ... (truncated)".to_string(),
-                                    Style::default().fg(c.muted).bg(c.tool_bg),
-                                )));
-                            }
-                        } else if msg.is_streaming && !*is_complete {
-                            // Still running — show a subtle spinner hint
-                            lines.push(Line::from(Span::styled(
-                                "      …".to_string(),
-                                Style::default().fg(c.muted).bg(c.tool_bg),
-                            )));
                         }
 
                         idx += 1;
                     }
                     // Orphan ToolResult (history fallback when no paired ToolCall exists)
-                    ContentItem::ToolResult { tool_name, content, is_error, .. } => {
-                        let body_color = if *is_error { c.tool_error } else { c.tool_output };
+                    ContentItem::ToolResult {
+                        tool_name,
+                        content,
+                        is_error,
+                        ..
+                    } => {
+                        let body_color = if *is_error {
+                            c.tool_error
+                        } else {
+                            c.tool_output
+                        };
 
                         lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", tool_name),
-                            Style::default().fg(c.text).bg(c.tool_bg).add_modifier(Modifier::BOLD),
-                        )));
-                        let wrapped = wrap_text(content, content_width.saturating_sub(8));
-                        let max_lines = 10;
-                        for line in wrapped.iter().take(max_lines) {
-                            lines.push(Line::from(Span::styled(
-                                format!("      {}", line),
-                                Style::default().fg(body_color).bg(c.tool_bg),
-                            )));
-                        }
-                        if wrapped.len() > max_lines {
-                            lines.push(Line::from(Span::styled(
-                                "      ... (truncated)".to_string(),
-                                Style::default().fg(c.muted).bg(c.tool_bg),
-                            )));
+                        lines.push(pad_render_line_with_style(
+                            Line::from(Span::styled(
+                                format!(
+                                    "  {}{}",
+                                    tool_name,
+                                    if show_tools { "" } else { "  collapsed" }
+                                ),
+                                Style::default()
+                                    .fg(c.text)
+                                    .bg(c.tool_bg)
+                                    .add_modifier(Modifier::BOLD),
+                            )),
+                            max_width,
+                            Style::default().bg(c.tool_bg),
+                        ));
+                        if show_tools {
+                            let wrapped = wrap_text(content, content_width.saturating_sub(8));
+                            let max_lines = 10;
+                            for line in wrapped.iter().take(max_lines) {
+                                lines.push(pad_render_line_with_style(
+                                    Line::from(Span::styled(
+                                        format!("      {}", line),
+                                        Style::default().fg(body_color).bg(c.tool_bg),
+                                    )),
+                                    max_width,
+                                    Style::default().bg(c.tool_bg),
+                                ));
+                            }
+                            if wrapped.len() > max_lines {
+                                lines.push(pad_render_line_with_style(
+                                    Line::from(Span::styled(
+                                        "      ... (truncated)".to_string(),
+                                        Style::default().fg(c.muted).bg(c.tool_bg),
+                                    )),
+                                    max_width,
+                                    Style::default().bg(c.tool_bg),
+                                ));
+                            }
                         }
                         idx += 1;
                     }
@@ -607,11 +771,25 @@ fn build_message_lines(
                             // Not yet encoded — show a text placeholder.
                             let text = alt.as_deref().unwrap_or("[image]");
                             lines.push(Line::from(vec![
-                                Span::styled("  IMG ", Style::default().fg(c.image_text).add_modifier(Modifier::BOLD)),
-                                Span::styled(format!("[Image: {}]", text), Style::default().fg(c.image_text)),
+                                Span::styled(
+                                    "  IMG ",
+                                    Style::default()
+                                        .fg(c.image_text)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("[Image: {}]", text),
+                                    Style::default().fg(c.image_text),
+                                ),
                             ]));
                             lines.push(Line::from(Span::styled(
-                                format!("    {}", source.chars().take(content_width.saturating_sub(4) as usize).collect::<String>()),
+                                format!(
+                                    "    {}",
+                                    source
+                                        .chars()
+                                        .take(content_width.saturating_sub(4) as usize)
+                                        .collect::<String>()
+                                ),
                                 Style::default().fg(c.muted),
                             )));
                         }
@@ -649,6 +827,13 @@ fn build_message_lines(
     (result, item_line_offsets)
 }
 
+fn content_item_is_tool(item: &ContentItem) -> bool {
+    matches!(
+        item,
+        ContentItem::ToolCall { .. } | ContentItem::ToolResult { .. }
+    )
+}
+
 fn tool_preview(name: &str, label: &str, args: &str, max_chars: usize) -> String {
     let preview = if label != name && !label.is_empty() {
         label.to_string()
@@ -663,7 +848,10 @@ fn tool_preview(name: &str, label: &str, args: &str, max_chars: usize) -> String
                 } else if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
                     path.to_string()
                 } else if let Some(first_val) = obj.values().next() {
-                    first_val.as_str().map(|s| s.to_string()).unwrap_or_else(|| first_val.to_string())
+                    first_val
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| first_val.to_string())
                 } else {
                     String::new()
                 }
@@ -808,6 +996,8 @@ Navigation Mode
 
 Global
   Esc          Abort generation
+  Ctrl+O       Collapse/expand tools
+  Ctrl+T       Show/hide thinking
   Ctrl+C        Quit
 
 Commands
@@ -880,7 +1070,10 @@ fn render_command_popup(frame: &mut Frame, popup: &CommandPopup, input_area: Rec
     for (i, cmd) in popup.matches.iter().enumerate() {
         let is_selected = i == popup.selected;
         let style = if is_selected {
-            Style::default().fg(c.selected_fg).bg(c.selected_bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(c.selected_fg)
+                .bg(c.selected_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(c.text)
         };
@@ -935,10 +1128,7 @@ fn render_model_picker(frame: &mut Frame, picker: &ModelPicker, area: Rect, them
 
     // Query line
     let query_text = if picker.query.is_empty() {
-        Span::styled(
-            "Type to filter…",
-            Style::default().fg(c.input_placeholder),
-        )
+        Span::styled("Type to filter…", Style::default().fg(c.input_placeholder))
     } else {
         Span::styled(
             &picker.query,
@@ -957,7 +1147,8 @@ fn render_model_picker(frame: &mut Frame, picker: &ModelPicker, area: Rect, them
     let total = picker.filtered_indices.len();
 
     if total == 0 {
-        let empty = Paragraph::new("No models match your filter.").style(Style::default().fg(c.muted));
+        let empty =
+            Paragraph::new("No models match your filter.").style(Style::default().fg(c.muted));
         frame.render_widget(empty, chunks[1]);
         return;
     }
@@ -975,15 +1166,19 @@ fn render_model_picker(frame: &mut Frame, picker: &ModelPicker, area: Rect, them
         let model_idx = picker.filtered_indices[i];
         let model = &picker.all_models[model_idx];
         let is_selected = i == selected;
-        let is_current = picker.current.as_ref().map_or(false, |c| {
-            c.provider == model.provider && c.id == model.id
-        });
+        let is_current = picker
+            .current
+            .as_ref()
+            .map_or(false, |c| c.provider == model.provider && c.id == model.id);
 
         let prefix = if is_selected { "> " } else { "  " };
         let label = format!("{}{}/{}", prefix, model.provider, model.id);
 
         let style = if is_selected {
-            Style::default().fg(c.selected_fg).bg(c.selected_bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(c.selected_fg)
+                .bg(c.selected_bg)
+                .add_modifier(Modifier::BOLD)
         } else if is_current {
             Style::default().fg(c.connected)
         } else {
@@ -1096,19 +1291,31 @@ fn parse_inline_markdown(text: &str, base_style: Style, theme: &Theme) -> Vec<Sp
 
     while i < chars.len() {
         if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' && !code {
-            flush(&mut spans, &mut buffer, inline_style(base_style, bold, italic, code, theme));
+            flush(
+                &mut spans,
+                &mut buffer,
+                inline_style(base_style, bold, italic, code, theme),
+            );
             bold = !bold;
             i += 2;
             continue;
         }
         if chars[i] == '*' && !code {
-            flush(&mut spans, &mut buffer, inline_style(base_style, bold, italic, code, theme));
+            flush(
+                &mut spans,
+                &mut buffer,
+                inline_style(base_style, bold, italic, code, theme),
+            );
             italic = !italic;
             i += 1;
             continue;
         }
         if chars[i] == '`' {
-            flush(&mut spans, &mut buffer, inline_style(base_style, bold, italic, code, theme));
+            flush(
+                &mut spans,
+                &mut buffer,
+                inline_style(base_style, bold, italic, code, theme),
+            );
             code = !code;
             i += 1;
             continue;
@@ -1118,7 +1325,11 @@ fn parse_inline_markdown(text: &str, base_style: Style, theme: &Theme) -> Vec<Sp
         i += 1;
     }
 
-    flush(&mut spans, &mut buffer, inline_style(base_style, bold, italic, code, theme));
+    flush(
+        &mut spans,
+        &mut buffer,
+        inline_style(base_style, bold, italic, code, theme),
+    );
     spans
 }
 
@@ -1196,11 +1407,42 @@ fn pad_render_line(mut line: Line<'static>, width: u16) -> Line<'static> {
     let current_width: usize = line
         .spans
         .iter()
-        .map(|span| span.content.chars().map(|ch| ch.width().unwrap_or(0)).sum::<usize>())
+        .map(|span| {
+            span.content
+                .chars()
+                .map(|ch| ch.width().unwrap_or(0))
+                .sum::<usize>()
+        })
         .sum();
     let target_width = width as usize;
     if current_width < target_width {
-        line.spans.push(Span::raw(" ".repeat(target_width - current_width)));
+        line.spans
+            .push(Span::raw(" ".repeat(target_width - current_width)));
+    }
+    line
+}
+
+fn pad_render_line_with_style(
+    mut line: Line<'static>,
+    width: u16,
+    pad_style: Style,
+) -> Line<'static> {
+    let current_width: usize = line
+        .spans
+        .iter()
+        .map(|span| {
+            span.content
+                .chars()
+                .map(|ch| ch.width().unwrap_or(0))
+                .sum::<usize>()
+        })
+        .sum();
+    let target_width = width as usize;
+    if current_width < target_width {
+        line.spans.push(Span::styled(
+            " ".repeat(target_width - current_width),
+            pad_style,
+        ));
     }
     line
 }
@@ -1214,7 +1456,12 @@ fn line_to_plain_text(line: &Line<'_>) -> String {
         .to_string()
 }
 
-fn highlight_selected_range(line: Line<'static>, start_col: usize, end_col: usize, theme: &Theme) -> Line<'static> {
+fn highlight_selected_range(
+    line: Line<'static>,
+    start_col: usize,
+    end_col: usize,
+    theme: &Theme,
+) -> Line<'static> {
     if start_col >= end_col {
         return line;
     }
@@ -1264,58 +1511,6 @@ fn highlight_selected_range(line: Line<'static>, start_col: usize, end_col: usiz
     }
 
     Line::from(spans)
-}
-
-fn indent_active_message_line(line: Line<'static>) -> Line<'static> {
-    let mut spans = Vec::with_capacity(line.spans.len() + 1);
-    spans.push(Span::raw(" "));
-    spans.extend(line.spans);
-    Line::from(spans)
-}
-
-fn active_message_visible_rows(
-    app: &App,
-    message_start_lines: &[usize],
-    total_lines: usize,
-    viewport_height: usize,
-    start: usize,
-    top_padding: usize,
-    visible_line_count: usize,
-) -> Option<(usize, usize)> {
-    let current_idx = app.current_message_index?;
-    let &message_start = message_start_lines.get(current_idx)?;
-    let message_end = message_start_lines
-        .get(current_idx + 1)
-        .copied()
-        .unwrap_or(total_lines)
-        .saturating_sub(1);
-
-    let (mut visible_start, mut visible_end) = if total_lines <= viewport_height {
-        (
-            top_padding + message_start,
-            top_padding + message_end,
-        )
-    } else {
-        (
-            message_start.saturating_sub(start),
-            message_end.saturating_sub(start),
-        )
-    };
-
-    if total_lines > viewport_height {
-        if message_end < start || message_start >= start + visible_line_count {
-            return None;
-        }
-        visible_start = visible_start.min(visible_line_count.saturating_sub(1));
-        visible_end = visible_end.min(visible_line_count.saturating_sub(1));
-    } else {
-        if visible_start >= visible_line_count {
-            return None;
-        }
-        visible_end = visible_end.min(visible_line_count.saturating_sub(1));
-    }
-
-    Some((visible_start, visible_end))
 }
 
 fn merge_styles(base: Style, overlay: Style) -> Style {
@@ -1415,28 +1610,15 @@ mod tests {
             .map(|span| (span.content.as_ref().to_string(), span.style.bg))
             .collect::<Vec<_>>();
 
-        // Default theme: selected_bg = Cyan, selected_fg = Black
+        let selected_bg = theme.colors.selected_bg;
         assert_eq!(
             rendered,
             vec![
                 ("ab".to_string(), None),
-                ("c".to_string(), Some(Color::Cyan)),
-                ("de".to_string(), Some(Color::Cyan)),
+                ("c".to_string(), Some(selected_bg)),
+                ("de".to_string(), Some(selected_bg)),
                 ("f".to_string(), None),
             ]
         );
-    }
-
-    #[test]
-    fn active_message_line_gets_indented() {
-        let line = Line::from(vec![Span::styled("Assistant 12:00", Style::default())]);
-        let indented = indent_active_message_line(line);
-        let text = indented
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-
-        assert!(text.starts_with(" Assistant 12:00"));
     }
 }

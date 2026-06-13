@@ -6,12 +6,19 @@ interface MessageFeedProps {
   messages: ChatMessage[];
 }
 
-const STICKY_THRESHOLD_PX = 50;
+const STUCK_THRESHOLD_PX = 50;
 
 export function MessageFeed({ messages }: MessageFeedProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isSticky, setIsSticky] = useState(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const isStuckRef = useRef(true);
+  const lastScrollHeightRef = useRef(0);
+  const [isStuck, setIsStuck] = useState(true);
+
+  const setStuck = useCallback((stuck: boolean) => {
+    isStuckRef.current = stuck;
+    setIsStuck(stuck);
+  }, []);
 
   const getDistanceFromBottom = useCallback(() => {
     const container = containerRef.current;
@@ -19,44 +26,77 @@ export function MessageFeed({ messages }: MessageFeedProps) {
     return container.scrollHeight - container.scrollTop - container.clientHeight;
   }, []);
 
-  const handleScroll = useCallback(() => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  }, []);
+
+  const updateStuckFromScroll = useCallback(() => {
     const distanceFromBottom = getDistanceFromBottom();
-    const shouldBeSticky = distanceFromBottom < STICKY_THRESHOLD_PX;
-    setIsSticky(prev => prev !== shouldBeSticky ? shouldBeSticky : prev);
-  }, [getDistanceFromBottom]);
+    setStuck(distanceFromBottom < STUCK_THRESHOLD_PX);
+  }, [getDistanceFromBottom, setStuck]);
 
-  useEffect(() => {
-    if (isSticky && bottomRef.current) {
-      requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-      });
+  const unstick = useCallback(() => {
+    if (isStuckRef.current) {
+      setStuck(false);
     }
-  }, [messages, isSticky]);
+  }, [setStuck]);
 
-  const handleWheel = useCallback((e: WheelEvent) => {
-    if (e.deltaY < 0) {
-      const distanceFromBottom = getDistanceFromBottom();
-      if (distanceFromBottom > STICKY_THRESHOLD_PX) {
-        setIsSticky(false);
-      }
-    }
-  }, [getDistanceFromBottom]);
+  const maybeScrollToBottom = useCallback(() => {
+    if (!isStuckRef.current) return;
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    const scrollHeight = container.scrollHeight;
+    if (scrollHeight <= lastScrollHeightRef.current) return;
+
+    lastScrollHeightRef.current = scrollHeight;
+    scrollToBottom('auto');
+  }, [scrollToBottom]);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const content = contentRef.current;
+    if (!container || !content) return;
+
+    lastScrollHeightRef.current = container.scrollHeight;
+    if (isStuckRef.current) {
+      scrollToBottom('auto');
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      maybeScrollToBottom();
+    });
+    resizeObserver.observe(content);
+
+    const handleScroll = () => {
+      updateStuckFromScroll();
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      // Unstick immediately on upward intent, even when still at the bottom.
+      if (e.deltaY < 0) {
+        unstick();
+      }
+    };
+
     container.addEventListener('scroll', handleScroll, { passive: true });
     container.addEventListener('wheel', handleWheel, { passive: true });
+
     return () => {
+      resizeObserver.disconnect();
       container.removeEventListener('scroll', handleScroll);
       container.removeEventListener('wheel', handleWheel);
     };
-  }, [handleScroll, handleWheel]);
+  }, [maybeScrollToBottom, scrollToBottom, unstick, updateStuckFromScroll]);
 
-  const handleStickyClick = useCallback(() => {
-    setIsSticky(true);
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
+  const handleResume = useCallback(() => {
+    setStuck(true);
+    scrollToBottom('smooth');
+    lastScrollHeightRef.current = containerRef.current?.scrollHeight ?? 0;
+  }, [scrollToBottom, setStuck]);
 
   return (
     <div
@@ -64,9 +104,9 @@ export function MessageFeed({ messages }: MessageFeedProps) {
       className="flex-1 relative scrollbar-hide"
       style={{ padding: '0 56px 0 40px' }}
     >
-      {!isSticky && (
+      {!isStuck && (
         <button
-          onClick={handleStickyClick}
+          onClick={handleResume}
           style={{
             position: 'fixed',
             bottom: '100px',
@@ -93,11 +133,11 @@ export function MessageFeed({ messages }: MessageFeedProps) {
           RESUME
         </button>
       )}
-      <div style={{ maxWidth: '100%', margin: '0 auto' }}>
+      <div ref={contentRef} style={{ maxWidth: '100%', margin: '0 auto' }}>
         {messages.map((msg) => (
           <MessageRow key={msg.id} msg={msg} />
         ))}
-        <div ref={bottomRef} />
+        <div aria-hidden="true" />
       </div>
     </div>
   );

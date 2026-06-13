@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTheme } from '@/hooks/useTheme';
+import { useToolBlockPrefs } from '@/hooks/useToolBlockPrefs';
 
 interface ModelInfo {
   provider: string;
@@ -27,6 +28,7 @@ export function Sidebar({
   isConnected = false,
 }: SidebarProps) {
   const { theme, cycleTheme } = useTheme();
+  const { toolsExpandedByDefault, setToolsExpandedByDefault } = useToolBlockPrefs();
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
@@ -375,6 +377,64 @@ export function Sidebar({
         className="flex flex-col items-center py-3 gap-2"
         style={{ borderTop: '1px solid var(--border-color)' }}
       >
+        {/* Tool block expand default */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={toolsExpandedByDefault}
+          aria-label="Expand tool blocks by default"
+          title={toolsExpandedByDefault ? 'Tool blocks: expanded by default' : 'Tool blocks: collapsed by default'}
+          onClick={() => setToolsExpandedByDefault(!toolsExpandedByDefault)}
+          style={{
+            width: '40px',
+            height: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'transparent',
+            border: `1px solid ${toolsExpandedByDefault ? 'var(--accent-primary)' : 'var(--border-color)'}`,
+            borderRadius: isFoundry ? '0' : 'var(--radius-md)',
+            color: toolsExpandedByDefault ? 'var(--accent-primary)' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            transition: 'all var(--transition-fast)',
+            padding: 0,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = 'var(--accent-primary)';
+            e.currentTarget.style.color = 'var(--accent-primary)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = toolsExpandedByDefault ? 'var(--accent-primary)' : 'var(--border-color)';
+            e.currentTarget.style.color = toolsExpandedByDefault ? 'var(--accent-primary)' : 'var(--text-secondary)';
+          }}
+        >
+          <span
+            style={{
+              position: 'relative',
+              width: '28px',
+              height: '14px',
+              borderRadius: '999px',
+              background: toolsExpandedByDefault ? 'var(--accent-primary)' : 'var(--bg-input)',
+              border: '1px solid var(--border-color)',
+              transition: 'background var(--transition-fast)',
+              display: 'inline-block',
+            }}
+          >
+            <span
+              style={{
+                position: 'absolute',
+                top: '1px',
+                left: toolsExpandedByDefault ? '15px' : '1px',
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: toolsExpandedByDefault ? 'var(--bg-panel)' : 'var(--text-secondary)',
+                transition: 'left var(--transition-fast), background var(--transition-fast)',
+              }}
+            />
+          </span>
+        </button>
+
         {/* Theme toggle */}
         <button
           onClick={cycleTheme}

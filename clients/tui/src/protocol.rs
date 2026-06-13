@@ -11,7 +11,10 @@ pub enum ClientMessage {
     #[serde(rename = "prompt")]
     Prompt { message: String },
     #[serde(rename = "prompt_with_images")]
-    PromptWithImages { message: String, images: Vec<ImageAttachment> },
+    PromptWithImages {
+        message: String,
+        images: Vec<ImageAttachment>,
+    },
     #[serde(rename = "abort")]
     Abort,
     #[serde(rename = "get_state")]
@@ -21,9 +24,16 @@ pub enum ClientMessage {
     #[serde(rename = "get_models")]
     GetModels,
     #[serde(rename = "switch_model")]
-    SwitchModel { provider: String, #[serde(rename = "modelId")] model_id: String },
+    SwitchModel {
+        provider: String,
+        #[serde(rename = "modelId")]
+        model_id: String,
+    },
     #[serde(rename = "command")]
-    Command { command: String, args: Option<Vec<String>> },
+    Command {
+        command: String,
+        args: Option<Vec<String>>,
+    },
     #[serde(rename = "ping")]
     Ping { timestamp: Option<u64> },
 }

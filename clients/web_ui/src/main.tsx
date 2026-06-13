@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { ThemeProvider } from '@/hooks/useTheme'
+import { ToolBlockPrefsProvider } from '@/hooks/useToolBlockPrefs'
 import './index.css'
 
 // Debug logging for unexpected refreshes
@@ -18,7 +19,9 @@ window.addEventListener('beforeunload', () => {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>
     <ThemeProvider>
-      <App />
+      <ToolBlockPrefsProvider>
+        <App />
+      </ToolBlockPrefsProvider>
     </ThemeProvider>
   </ErrorBoundary>,
 )

@@ -1,8 +1,18 @@
 import { useState } from 'react';
 import { extractImagePath, openImageInNewTab } from './utils';
 
-export function ToolCallBlock({ name, args, result }: { name: string; args?: Record<string, unknown>; result?: { content: string; isError?: boolean } }) {
-  const [isExpanded, setIsExpanded] = useState(true);
+export function ToolCallBlock({
+  name,
+  args,
+  result,
+  defaultExpanded = false,
+}: {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: { content: string; isError?: boolean };
+  defaultExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const commandPreview = args && typeof args.command === 'string' ? args.command : null;
   const pathPreview = args && typeof args.path === 'string' ? args.path : null;
   const upperName = name.toUpperCase();
@@ -120,8 +130,16 @@ export function ToolCallBlock({ name, args, result }: { name: string; args?: Rec
   );
 }
 
-export function ToolResultBlock({ content, isError }: { content: string; isError?: boolean }) {
-  const [isExpanded, setIsExpanded] = useState(true);
+export function ToolResultBlock({
+  content,
+  isError,
+  defaultExpanded = false,
+}: {
+  content: string;
+  isError?: boolean;
+  defaultExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [copied, setCopied] = useState(false);
   const imagePath = extractImagePath(content);
 

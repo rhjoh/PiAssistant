@@ -1,4 +1,5 @@
 import { MessageContent, TokenUsage } from '@/types';
+import { useToolBlockPrefs } from '@/hooks/useToolBlockPrefs';
 import { MarkdownContent } from './MarkdownRenderer';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallBlock, ToolResultBlock } from './ToolBlocks';
@@ -47,6 +48,7 @@ function groupToolContent(contents: MessageContent[]): Array<
 }
 
 export function AssistantContent({ content, isStreaming, expandedThinking, onToggleThinking, tokenUsage }: AssistantContentProps) {
+  const { toolsExpandedByDefault } = useToolBlockPrefs();
   const rawContents = typeof content === 'string'
     ? [{ type: 'text' as const, content }]
     : (Array.isArray(content) ? content : []);
@@ -68,7 +70,15 @@ export function AssistantContent({ content, isStreaming, expandedThinking, onTog
       )}
       {contents.map((part, idx) => {
         if (part.type === 'tool_group') {
-          return <ToolCallBlock key={idx} name={part.call.name} args={part.call.args} result={part.result} />;
+          return (
+            <ToolCallBlock
+              key={`tool-group-${idx}-${toolsExpandedByDefault}`}
+              name={part.call.name}
+              args={part.call.args}
+              result={part.result}
+              defaultExpanded={toolsExpandedByDefault}
+            />
+          );
         }
         switch (part.type) {
           case 'text':
@@ -84,9 +94,23 @@ export function AssistantContent({ content, isStreaming, expandedThinking, onTog
               />
             );
           case 'tool_call':
-            return <ToolCallBlock key={idx} name={part.name} args={part.args} />;
+            return (
+              <ToolCallBlock
+                key={`tool-call-${idx}-${toolsExpandedByDefault}`}
+                name={part.name}
+                args={part.args}
+                defaultExpanded={toolsExpandedByDefault}
+              />
+            );
           case 'tool_result':
-            return <ToolResultBlock key={idx} content={part.content} isError={part.isError} />;
+            return (
+              <ToolResultBlock
+                key={`tool-result-${idx}-${toolsExpandedByDefault}`}
+                content={part.content}
+                isError={part.isError}
+                defaultExpanded={toolsExpandedByDefault}
+              />
+            );
           case 'image':
             return (
               <img

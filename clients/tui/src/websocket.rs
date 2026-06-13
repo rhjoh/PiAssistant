@@ -31,7 +31,13 @@ pub struct WebSocketClient {
 }
 
 impl WebSocketClient {
-    pub fn new(url: impl Into<String>) -> (Self, UnboundedReceiver<WsEvent>, UnboundedSender<ClientMessage>) {
+    pub fn new(
+        url: impl Into<String>,
+    ) -> (
+        Self,
+        UnboundedReceiver<WsEvent>,
+        UnboundedSender<ClientMessage>,
+    ) {
         let url = url.into();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -69,14 +75,17 @@ impl WebSocketClient {
 
             self.reconnect_attempts += 1;
             if self.reconnect_attempts > self.max_reconnect_attempts {
-                let _ = self.event_tx.send(WsEvent::Error(
-                    "Max reconnect attempts reached".to_string(),
-                ));
+                let _ = self
+                    .event_tx
+                    .send(WsEvent::Error("Max reconnect attempts reached".to_string()));
                 break;
             }
 
             let delay = Duration::from_secs((2_u64).pow(self.reconnect_attempts.min(6)));
-            info!("Reconnecting in {:?} (attempt {})", delay, self.reconnect_attempts);
+            info!(
+                "Reconnecting in {:?} (attempt {})",
+                delay, self.reconnect_attempts
+            );
             tokio::time::sleep(delay).await;
         }
 
@@ -84,13 +93,10 @@ impl WebSocketClient {
     }
 
     async fn connect_and_run(&mut self) -> Result<()> {
-        let (ws_stream, _) = timeout(
-            Duration::from_secs(10),
-            connect_async(&self.url),
-        )
-        .await
-        .context("Connection timeout")?
-        .context("Failed to connect")?;
+        let (ws_stream, _) = timeout(Duration::from_secs(10), connect_async(&self.url))
+            .await
+            .context("Connection timeout")?
+            .context("Failed to connect")?;
 
         info!("WebSocket connected");
         let _ = self.event_tx.send(WsEvent::Connected);

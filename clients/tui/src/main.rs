@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -98,11 +101,10 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Detect terminal image capabilities
-    let mut picker = Picker::from_query_stdio()
-        .unwrap_or_else(|_| {
-            // Fallback: assume a typical 8x16 font on a standard terminal
-            Picker::halfblocks()
-        });
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| {
+        // Fallback: assume a typical 8x16 font on a standard terminal
+        Picker::halfblocks()
+    });
 
     // Override for tmux: auto-detection fails because $TERM=tmux-256color,
     // but Kitty graphics escape sequences still pass through.
@@ -112,7 +114,8 @@ async fn main() -> Result<()> {
 
     info!(
         "Image protocol: {:?}, font size: {:?}",
-        picker.protocol_type(), picker.font_size()
+        picker.protocol_type(),
+        picker.font_size()
     );
 
     // Resolve theme: CLI arg --theme <name> > env ASSISTANT_TUI_THEME > default
@@ -317,6 +320,18 @@ async fn handle_key(
         // Ctrl+C: always quit
         Char('c') if ctrl => {
             return Ok(true);
+        }
+
+        // Ctrl+O: collapse/expand tool outputs
+        Char('o') if ctrl => {
+            app.toggle_tools();
+            return Ok(false);
+        }
+
+        // Ctrl+T: show/hide thinking blocks
+        Char('t') if ctrl => {
+            app.toggle_thinking();
+            return Ok(false);
         }
 
         // Esc: abort generation if processing
