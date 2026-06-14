@@ -50,6 +50,8 @@ Commands:
              stop      Stop Web UI dev server
              status    Show Web UI status
              restart   Restart Web UI dev server
+  session    Show session info and stats
+             new       Archive current session and start fresh
   status     Show gateway process status
   logs       Show recent logs
   logs -f    Follow logs
@@ -404,6 +406,100 @@ async function webuiCommand(args: string[]): Promise<void> {
   }
 }
 
+async function sessionCommand(args: string[]): Promise<void> {
+  const subcommand = args[0] ?? "info";
+
+  switch (subcommand) {
+    case "new": {
+      await cleanupStalePidFile();
+      const state = await readPidState();
+      if (!state || !isPidRunning(state.pid)) {
+        console.log("Gateway is not running. Start it with `personalos start` first.");
+        return;
+      }
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${config.fileServer.port}/session/new`, { method: "POST" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({})) as { error?: string };
+          console.log(`❌ Failed: ${body.error ?? res.statusText}`);
+          return;
+        }
+        const data = await res.json() as { ok: boolean; archived: string };
+        console.log(`✅ New session started`);
+        console.log(`   Archived: ${data.archived}`);
+      } catch {
+        console.log("❌ Could not reach gateway. Is it running?");
+      }
+      return;
+    }
+
+    case "info":
+    case "stats":
+    case undefined: {
+      await cleanupStalePidFile();
+      const state = await readPidState();
+      if (!state || !isPidRunning(state.pid)) {
+        console.log("Gateway is not running. Start it with `personalos start` first.");
+        return;
+      }
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${config.fileServer.port}/session`);
+        if (!res.ok) {
+          console.log("❌ Could not fetch session info");
+          return;
+        }
+        const info = await res.json() as {
+          sessionPath: string;
+          archiveDir: string;
+          compactionCount: number;
+          currentContextTokens: number | null;
+          stats: { tokens: { input: number; output: number; total: number }; cost: number; messageCount: number } | null;
+          context: { contextWindow: number; compactThreshold: number; model: string } | null;
+        };
+
+        const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
+
+        console.log(`📁 Session: ${info.sessionPath}`);
+        console.log(`📦 Archive: ${info.archiveDir}`);
+        console.log(`🔄 Compactions: ${info.compactionCount}`);
+
+        if (info.context) {
+          console.log("");
+          console.log("🧠 Context:");
+          console.log(`   Model: ${info.context.model}`);
+          console.log(`   Window: ${fmt(info.context.contextWindow)} tokens`);
+          console.log(`   Compacts at: ${fmt(info.context.compactThreshold)} tokens`);
+          if (info.currentContextTokens != null) {
+            const pct = ((info.currentContextTokens / info.context.compactThreshold) * 100).toFixed(0);
+            console.log(`   Current: ~${fmt(info.currentContextTokens)} tokens (${pct}% of compaction threshold)`);
+          }
+        }
+
+        if (info.stats) {
+          console.log("");
+          console.log("📊 Cumulative stats:");
+          console.log(`   Messages: ${info.stats.messageCount}`);
+          console.log(`   Tokens: ↑${fmt(info.stats.tokens.input)} ↓${fmt(info.stats.tokens.output)} (${fmt(info.stats.tokens.total)} total)`);
+          console.log(`   Cost: $${info.stats.cost.toFixed(3)}`);
+        }
+
+        console.log("");
+        console.log("Use `personalos session new` to start a fresh session.");
+      } catch {
+        console.log("❌ Could not reach gateway. Is it running?");
+      }
+      return;
+    }
+
+    default:
+      console.error(`Unknown session subcommand: ${subcommand}`);
+      console.log("Usage: personalos session [new]");
+      process.exit(1);
+  }
+}
+
 function formatDuration(ms: number): string {
   if (ms < 60000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
@@ -550,6 +646,9 @@ async function main(): Promise<void> {
       return;
     case "webui":
       await webuiCommand(args);
+      return;
+    case "session":
+      await sessionCommand(args);
       return;
     case "logs":
       await logsCommand(args);

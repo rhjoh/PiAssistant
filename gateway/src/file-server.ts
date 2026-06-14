@@ -4,6 +4,7 @@ import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
 import type { StatusProvider } from "./status-types.js";
 import type { MemoryStore, SearchMemoryInput, WriteMemoryInput } from "./memory-store.js";
+import type { SessionManager } from "./session-manager.js";
 
 /**
  * Simple HTTP file server for serving local images to web UI clients.
@@ -14,6 +15,7 @@ export class FileServer {
   private readonly allowedRoots: string[];
   private statusProvider: StatusProvider | null = null;
   private memoryStore: MemoryStore | null = null;
+  private sessionManager: SessionManager | null = null;
 
   constructor(
     private port: number = 3457,
@@ -30,6 +32,10 @@ export class FileServer {
 
   setMemoryStore(store: MemoryStore): void {
     this.memoryStore = store;
+  }
+
+  setSessionManager(sessionManager: SessionManager): void {
+    this.sessionManager = sessionManager;
   }
 
   start(): Promise<void> {
@@ -69,6 +75,11 @@ export class FileServer {
 
     if (url.startsWith("/memory/")) {
       await this.handleMemoryRequest(req, res, url);
+      return;
+    }
+
+    if (url.startsWith("/session")) {
+      await this.handleSessionRequest(req, res, url);
       return;
     }
 
@@ -201,6 +212,43 @@ export class FileServer {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[FileServer] Memory request failed:", message);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private async handleSessionRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string
+  ): Promise<void> {
+    if (!this.sessionManager) {
+      this.sendJson(res, 503, { error: "Session manager not available" });
+      return;
+    }
+
+    try {
+      // GET /session — show session info
+      if (path === "/session" && req.method === "GET") {
+        const info = await this.sessionManager.getSessionInfo();
+        this.sendJson(res, 200, info);
+        return;
+      }
+
+      // POST /session/new — archive current session and start fresh
+      if (path === "/session/new" && req.method === "POST") {
+        const result = await this.sessionManager.archiveAndStartNew();
+        if (result.error) {
+          this.sendJson(res, 500, { ok: false, error: result.error });
+        } else {
+          this.sendJson(res, 200, { ok: true, archived: result.archived });
+        }
+        return;
+      }
+
+      this.sendJson(res, 404, { error: "Session endpoint not found" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[FileServer] Session request failed:", message);
       this.sendJson(res, 500, { error: message });
     }
   }

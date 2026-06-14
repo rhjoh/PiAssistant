@@ -102,6 +102,7 @@ export async function startGateway(): Promise<void> {
     config.heartbeat.intervalMs
   );
   fileServer.setStatusProvider(statusProvider);
+  fileServer.setSessionManager(sessionManager);
 
   pi.on("event", (event) => {
     if (event.type === "tool_execution_start") {
