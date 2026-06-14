@@ -7,7 +7,7 @@ Personal AI assistant system with a gateway-owned Pi RPC session and multiple cl
 - Web UI
 - Custom TUI (Rust)
 
-The gateway is the source of truth. It owns the Pi RPC process, session lifecycle, multi-client sync, background services, and local file/status serving.
+The gateway is the source of truth. It owns the Pi RPC process, session lifecycle, multi-client sync, background services, and local API/file serving.
 
 ## Current Architecture
 
@@ -17,11 +17,12 @@ Telegram + macOS app + Web UI + TUI
          Gateway (Node.js, localhost)
       - Pi RPC owner
       - WebSocket server (:3456)
-      - File/status server (:3457)
+      - API server (:3457)
       - Broadcast manager
       - Telegram adapter
       - Session manager
-      - Memory watcher
+      - Memory store
+      - Task scheduler
       - Heartbeat
                     ↓
           Pi RPC session (main.jsonl)
@@ -39,9 +40,10 @@ assistant/
 │   │   ├── websocket-server.ts   # Standard WS server
 │   │   ├── broadcast.ts          # Multi-client event distribution
 │   │   ├── pi-rpc.ts             # Pi RPC wrapper
-│   │   ├── file-server.ts        # Local image serving + /status endpoint
+│   │   ├── api-server.ts         # Local HTTP API + file serving
 │   │   ├── session-manager.ts    # /new and compaction archival
-│   │   ├── memory-watcher.ts     # Memory extraction background job
+│   │   ├── memory-store.ts       # SQLite memory store
+│   │   ├── task-scheduler.ts     # node-cron task scheduler
 │   │   ├── heartbeat.ts          # Proactive heartbeat runner
 │   │   ├── telegram.ts           # Telegram bot
 │   │   └── handlers/             # WS message handlers + commands
@@ -66,6 +68,7 @@ Typical runtime data lives under `~/assistant_main`:
 - `logs/gateway.log` - gateway log file
 - `run/personalos.pid` - managed process state
 - `memory.md` - extracted long-term memory
+- `tasks/tasks.sqlite` - scheduled task definitions and run history
 
 ## Quick Start
 
@@ -118,6 +121,7 @@ npm run dev
 - `ws://127.0.0.1:3456/` - standard clients
 - `http://127.0.0.1:3457/files/<absolute-path>` - local image/file serving
 - `http://127.0.0.1:3457/status` - gateway status JSON
+- `http://127.0.0.1:3457/api/tasks` - scheduled task API
 
 ## Supported Client Messages
 
@@ -148,8 +152,9 @@ PI_THINKING_LEVEL=off
 FILE_SERVER_PORT=3457
 IMAGE_DIR=~/assistant_main/images
 LOG_FILE=~/assistant_main/logs/gateway.log
-MEMORY_ENABLED=true
-MEMORY_SCAN_INTERVAL_MS=600000
+MEMORY_DB_PATH=~/assistant_main/memory/memory.sqlite
+TASK_DB_PATH=~/assistant_main/tasks/tasks.sqlite
+TASK_DEFAULT_TIMEZONE=Australia/Melbourne
 HEARTBEAT_INTERVAL_MS=900000
 ```
 

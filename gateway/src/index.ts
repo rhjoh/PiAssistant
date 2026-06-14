@@ -12,12 +12,16 @@ import { TelegramClient } from "./telegram-client.js";
 import { BroadcastManager } from "./broadcast.js";
 import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
-import { FileServer } from "./file-server.js";
+import { ApiServer } from "./api-server.js";
 import { installTimestampedConsole } from "./logging.js";
 import { GatewayStatusProvider } from "./gateway-status.js";
 import { OllamaEmbeddingClient } from "./memory-embeddings.js";
 import { MemoryStore } from "./memory-store.js";
 import { DailyContextManager } from "./daily-context.js";
+import { TaskStore } from "./task-store.js";
+import { TaskRunner } from "./task-runner.js";
+import { TaskScheduler } from "./task-scheduler.js";
+import { CommandRegistry } from "./handlers/commands.js";
 
 export async function startGateway(): Promise<void> {
   installTimestampedConsole(config.runtime.logFile);
@@ -54,6 +58,13 @@ export async function startGateway(): Promise<void> {
   console.log(`[Gateway] Memory briefing: ${config.memory.briefingPath}`);
   console.log(`[Gateway] Memory embeddings: ${config.memory.embeddingHost} (${config.memory.embeddingModel})`);
 
+  const taskStore = new TaskStore({
+    dbPath: config.tasks.dbPath,
+    defaultTimezone: config.tasks.timezone,
+  });
+  await taskStore.init();
+  console.log(`[Gateway] Task DB: ${config.tasks.dbPath}`);
+
   const memoryExtensions = existsSync(config.memory.toolsExtensionPath)
     ? [config.memory.toolsExtensionPath]
     : [];
@@ -64,7 +75,9 @@ export async function startGateway(): Promise<void> {
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd, {
     extensions: memoryExtensions,
   });
-  const broadcastManager = new BroadcastManager(pi);
+  const broadcastManager = new BroadcastManager(pi, {
+    broadcastThinking: config.broadcast.thinkingEnabled,
+  });
   const sessionManager = new SessionManager(pi, {
     sessionPath: config.pi.sessionPath,
     onArchive: (archivePath, reason) => {
@@ -78,19 +91,28 @@ export async function startGateway(): Promise<void> {
   const telegramClient = new TelegramClient(telegram);
   broadcastManager.registerClient(telegramClient);
 
+  const taskRunner = new TaskRunner(taskStore, broadcastManager);
+  const taskScheduler = new TaskScheduler(taskStore, taskRunner, {
+    enabled: config.tasks.enabled,
+  });
+
   const wsGateway = new WebSocketGateway(
     broadcastManager,
     pi,
     config.webSocket.port,
-    config.webSocket.host
+    config.webSocket.host,
+    taskStore,
+    taskScheduler
   );
-  const fileServer = new FileServer(
-    config.fileServer.port,
+
+  const apiServer = new ApiServer(
+    config.apiServer.port,
     [config.images.dir],
     config.webSocket.port,
-    config.fileServer.host
+    config.apiServer.host
   );
-  fileServer.setMemoryStore(memoryStore);
+  apiServer.setMemoryStore(memoryStore);
+  apiServer.setTaskServices(taskStore, taskScheduler);
 
   // Initialize status provider
   const statusProvider = new GatewayStatusProvider(
@@ -101,8 +123,8 @@ export async function startGateway(): Promise<void> {
     config.webSocket.host,
     config.heartbeat.intervalMs
   );
-  fileServer.setStatusProvider(statusProvider);
-  fileServer.setSessionManager(sessionManager);
+  apiServer.setStatusProvider(statusProvider);
+  apiServer.setSessionManager(sessionManager);
 
   pi.on("event", (event) => {
     if (event.type === "tool_execution_start") {
@@ -162,8 +184,9 @@ export async function startGateway(): Promise<void> {
   await wsGateway.start();
   statusProvider.setWebsocketRunning(true);
 
-  console.log("[Gateway] Starting file server...");
-  await fileServer.start();
+  console.log("[Gateway] Starting API server...");
+  await apiServer.start();
+  taskScheduler.init();
 
   telegram.onMessage(async (text, ctx) => {
     console.log(`[Telegram] Incoming message: ${text.slice(0, 100)}`);
@@ -174,8 +197,13 @@ export async function startGateway(): Promise<void> {
   telegram.onStatus(async () => handleStatus(pi, config.pi.sessionPath));
   telegram.onModel(async (_ctx, args) => handleModel(pi, args));
   telegram.onSession(async () => handleSession(sessionManager));
-  telegram.onTakeover(async () => {
-    return "Gateway owns the session. Native TUI is not available while Gateway is running.";
+  const telegramCommandRegistry = new CommandRegistry({
+    broadcastManager,
+    taskStore,
+    taskScheduler,
+  });
+  telegram.onTask(async (_ctx, args) => {
+    return telegramCommandRegistry.execute("task", args ? args.split(/\s+/) : []);
   });
 
   const heartbeat = new Heartbeat(
@@ -237,10 +265,12 @@ export async function startGateway(): Promise<void> {
     console.log("[Gateway] Shutting down...");
     heartbeat.stop();
     dailyContext.stop();
+    taskScheduler.stop();
     wsGateway.stop();
-    fileServer.stop();
+    apiServer.stop();
     telegram.stop();
     pi.stop();
+    taskStore.close();
     memoryStore.close();
     process.exit(0);
   };

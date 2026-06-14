@@ -419,7 +419,7 @@ async function sessionCommand(args: string[]): Promise<void> {
       }
 
       try {
-        const res = await fetch(`http://127.0.0.1:${config.fileServer.port}/session/new`, { method: "POST" });
+        const res = await fetch(`http://127.0.0.1:${config.apiServer.port}/session/new`, { method: "POST" });
         if (!res.ok) {
           const body = await res.json().catch(() => ({})) as { error?: string };
           console.log(`❌ Failed: ${body.error ?? res.statusText}`);
@@ -445,7 +445,7 @@ async function sessionCommand(args: string[]): Promise<void> {
       }
 
       try {
-        const res = await fetch(`http://127.0.0.1:${config.fileServer.port}/session`);
+        const res = await fetch(`http://127.0.0.1:${config.apiServer.port}/session`);
         if (!res.ok) {
           console.log("❌ Could not fetch session info");
           return;
@@ -514,7 +514,7 @@ function minsSince(isoDate: string | null): string {
 
 async function fetchStatus(): Promise<GatewayStatus | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${config.fileServer.port}/status`);
+    const res = await fetch(`http://127.0.0.1:${config.apiServer.port}/status`);
     if (!res.ok) return null;
     return (await res.json()) as GatewayStatus;
   } catch {

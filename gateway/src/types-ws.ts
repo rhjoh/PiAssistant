@@ -21,23 +21,30 @@ export interface WSImageAttachment {
   mimeType: string; // e.g., "image/png", "image/jpeg"
 }
 
+export interface WSTaskMetadata {
+  origin?: "task";
+  taskId?: string;
+  taskRunId?: string;
+  taskName?: string;
+}
+
 // Gateway → Client
 export type WSServerMessage =
   | { type: "connection"; data: WSConnectionData }
   | { type: "user_message"; data: { content: string; source: string } }
-  | { type: "text_delta"; data: { content: string } }
-  | { type: "thinking_delta"; data: { thinkingId: string; content: string; seq: number } }
-  | { type: "thinking_done"; data: { thinkingId: string; content: string; seq: number } }
+  | { type: "text_delta"; data: { content: string } & WSTaskMetadata }
+  | { type: "thinking_delta"; data: { thinkingId: string; content: string; seq: number } & WSTaskMetadata }
+  | { type: "thinking_done"; data: { thinkingId: string; content: string; seq: number } & WSTaskMetadata }
   | {
       type: "tool_start";
-      data: { toolCallId: string; toolName: string; args?: unknown; label: string };
+      data: { toolCallId: string; toolName: string; args?: unknown; label: string } & WSTaskMetadata;
     }
-  | { type: "tool_output"; data: { toolCallId: string; output: string; truncated?: boolean } }
-  | { type: "tool_end"; data: { toolCallId: string; toolName: string } }
-  | { type: "image"; data: { source: string; alt?: string } }
-  | { type: "error"; data: { message: string } }
+  | { type: "tool_output"; data: { toolCallId: string; output: string; truncated?: boolean } & WSTaskMetadata }
+  | { type: "tool_end"; data: { toolCallId: string; toolName: string } & WSTaskMetadata }
+  | { type: "image"; data: { source: string; alt?: string } & WSTaskMetadata }
+  | { type: "error"; data: { message: string } & WSTaskMetadata }
   | { type: "proactive"; data: { message: string } }
-  | { type: "done"; data: { finalText: string; usage?: TokenUsage } }
+  | { type: "done"; data: { finalText: string; usage?: TokenUsage } & WSTaskMetadata }
   | { type: "usage"; data: TokenUsage }
   | { type: "state"; data: WSStateData }
   | { type: "history"; data: { messages: unknown[] } }

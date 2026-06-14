@@ -1,4 +1,4 @@
-export interface FileServerStatus {
+export interface ApiServerStatus {
   websocket: {
     running: boolean;
     host?: string;
@@ -27,7 +27,7 @@ export interface FileServerStatus {
 }
 
 export interface StatusProvider {
-  getStatus(): Promise<FileServerStatus> | FileServerStatus;
+  getStatus(): Promise<ApiServerStatus> | ApiServerStatus;
   recordHeartbeat(): void;
   recordDailyContextRun(): void;
 }

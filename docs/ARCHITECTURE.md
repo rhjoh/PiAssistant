@@ -1,6 +1,6 @@
 # PiAssistant Architecture
 
-**Last Updated:** 2026-04-06
+**Last Updated:** 2026-06-14
 
 ## Overview
 
@@ -12,12 +12,13 @@ Telegram + macOS app + Web UI + Pi TUI bridge
          Gateway (Node.js, localhost)
       - Pi RPC owner
       - WebSocket server (:3456)
-      - File/status server (:3457)
+      - API server (:3457)
       - Broadcast manager
       - Telegram adapter
       - Session manager
       - Memory store/API
       - Daily context manager
+      - Task scheduler
       - Heartbeat
                     ↓
           Pi RPC session (main.jsonl)
@@ -56,8 +57,11 @@ Key modules:
 | `memory-store.ts` | SQLite-backed durable memory store and search |
 | `memory-embeddings.ts` | Ollama embedding client for vector search |
 | `daily-context.ts` | Rolling today context and daily extraction |
+| `task-store.ts` | SQLite scheduled task definitions and run history |
+| `task-scheduler.ts` | `node-cron` timer registration and lifecycle |
+| `task-runner.ts` | Scheduled/manual task prompt execution |
 | `heartbeat.ts` | Periodic internal prompts |
-| `file-server.ts` | Local file serving and status endpoint |
+| `api-server.ts` | Local HTTP API, status, memory/session/task endpoints, file serving |
 | `gateway-status.ts` | Runtime status snapshot provider |
 | `image-storage.ts` | Image persistence and history sanitization |
 | `cli/index.ts` | `personalos` process manager/status/logs CLI |
@@ -68,10 +72,11 @@ Startup flow:
 2. Ensure runtime/session directories exist.
 3. Start Pi RPC.
 4. Start WebSocket server on `127.0.0.1:3456`.
-5. Start file/status server on `127.0.0.1:3457`.
+5. Start API server on `127.0.0.1:3457`.
 6. Initialize the memory store and generated briefing.
-7. Start heartbeat and daily context manager.
-8. Start Telegram bot.
+7. Initialize task store and rehydrate enabled scheduled tasks.
+8. Start heartbeat and daily context manager.
+9. Start Telegram bot.
 
 ### 2. Pi RPC
 
@@ -215,20 +220,24 @@ Implemented capabilities:
 
 The macOS client is still a major client surface, but its Swift files are large and modularization remains backlog work.
 
-### 8. File Server and Status Endpoint
+### 8. API Server
 
-Location: `gateway/src/file-server.ts`
+Location: `gateway/src/api-server.ts`
 
 HTTP endpoint:
 
 - `http://127.0.0.1:3457/files/<absolute-path>`
 - `http://127.0.0.1:3457/status`
+- `http://127.0.0.1:3457/memory/*`
+- `http://127.0.0.1:3457/session/*`
+- `http://127.0.0.1:3457/api/tasks`
 
 Responsibilities:
 
 - serve saved image files to browser clients
 - constrain file access to allowed roots
 - provide runtime status JSON for the CLI and external checks
+- expose local memory, session, and scheduled task APIs
 
 ### 9. Session Management
 
@@ -245,7 +254,7 @@ Runtime paths typically point to `~/assistant_main/sessions/main.jsonl` and `~/a
 
 ### 10. Memory System
 
-Current memory is gateway-owned and SQLite-backed. Pi accesses it through a Pi extension that calls the gateway file server API.
+Current memory is gateway-owned and SQLite-backed. Pi accesses it through a Pi extension that calls the gateway API server.
 
 Active modules:
 
@@ -255,7 +264,7 @@ Active modules:
 | `gateway/src/memory-embeddings.ts` | Ollama embedding client |
 | `gateway/src/daily-context.ts` | Periodic `today.md` rewrite and daily durable extraction |
 | `gateway/pi-extensions/memory-tools.ts` | Pi `memory_search` and `memory_write` tools |
-| `gateway/src/file-server.ts` | HTTP memory endpoints |
+| `gateway/src/api-server.ts` | HTTP memory endpoints |
 
 Runtime paths:
 
@@ -267,7 +276,7 @@ Runtime paths:
 
 Retrieval combines SQLite FTS with sqlite-vec embeddings. Embeddings are generated through Ollama using `MEMORY_EMBEDDING_HOST` and `MEMORY_EMBEDDING_MODEL`.
 
-The gateway loads `gateway/pi-extensions/memory-tools.ts` into the main Pi RPC process. Those tools do not write markdown files directly; they call the file server endpoints:
+The gateway loads `gateway/pi-extensions/memory-tools.ts` into the main Pi RPC process. Those tools do not write markdown files directly; they call the API server endpoints:
 
 ```text
 POST /memory/search
@@ -278,6 +287,32 @@ POST /memory/briefing
 
 `daily-context.ts` runs extraction separately from the main Pi RPC session with `pi -p --no-session --no-tools`. It periodically rewrites `today.md` from recent transcript deltas. Once per day, it scans the day's context and writes durable memory candidates into SQLite through `MemoryStore`.
 
+### 11. Task Scheduler
+
+Scheduled tasks are Gateway-owned prompt templates stored in SQLite and armed with `node-cron` while the Gateway process is running.
+
+Active modules:
+
+| File | Responsibility |
+|------|----------------|
+| `gateway/src/task-store.ts` | `tasks` and `task_runs` SQLite persistence |
+| `gateway/src/task-scheduler.ts` | Rehydrates enabled tasks and manages live cron handles |
+| `gateway/src/task-runner.ts` | Renders prompts and records run status |
+| `gateway/src/api-server.ts` | `/api/tasks` REST endpoints |
+| `gateway/src/handlers/commands.ts` | `/task` command |
+
+Runtime paths:
+
+- Task DB: `~/assistant_main/tasks/tasks.sqlite` by default
+
+Execution flow:
+
+1. A task is created through `/task` or `POST /api/tasks`.
+2. `TaskScheduler` registers enabled tasks with `node-cron`.
+3. When a schedule fires, `TaskRunner` creates a `task_runs` row and asks `BroadcastManager` to queue the rendered prompt.
+4. The prompt waits until active user work finishes, then runs through the normal Pi RPC stream.
+5. Clients receive normal stream events with task metadata (`origin`, `taskId`, `taskRunId`).
+
 `memory.md` is not the canonical writable store. It exists as legacy input/reference material and can be imported, but new writes should go through `memory_write` or `POST /memory/write`.
 
 #### Legacy Memory Watcher
@@ -286,7 +321,7 @@ Location: `gateway/src/memory-watcher.ts`
 
 The old watcher scanned session history on an interval, extracted memory artifacts with an LLM, wrote markdown outputs under `~/assistant_main`, and tracked offsets in a sidecar state file. It is preserved for reference only and is not wired into the current gateway startup path.
 
-### 11. Heartbeat
+### 12. Heartbeat
 
 Location: `gateway/src/heartbeat.ts`
 
@@ -299,7 +334,7 @@ Current behavior:
 
 Heartbeat-related rendering/filtering across clients is still an active bug-prone area, especially in the Web UI.
 
-### 12. CLI (`personalos`)
+### 13. CLI (`personalos`)
 
 Entry points:
 
@@ -319,7 +354,7 @@ Commands:
 | `personalos session new` | Archive current session and start a fresh one (POST /session/new) |
 | `personalos logs` | Stream or dump gateway log output (`-f` to tail) |
 
-All commands detect gateway health via the PID file (`~/assistant_main/run/personalos.pid`) and communicate through the file server (`:3457`) for status and session operations.
+All commands detect gateway health via the PID file (`~/assistant_main/run/personalos.pid`) and communicate through the API server (`:3457`) for status and session operations.
 
 ## Data Flows
 
@@ -362,7 +397,7 @@ Gateway validates and saves image to disk
   ↓
 Gateway forwards base64 image data to Pi RPC
   ↓
-Session/history references are stored and later served by file server
+Session/history references are stored and later served by the API server
   ↓
 Browser clients load image via :3457/files/...
 ```
@@ -391,6 +426,7 @@ Common runtime paths:
 - `~/assistant_main/logs/gateway.log`
 - `~/assistant_main/run/personalos.pid`
 - `~/assistant_main/memory.md`
+- `~/assistant_main/tasks/tasks.sqlite`
 
 ## Known Documentation Boundaries
 

@@ -1,21 +1,24 @@
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
 import type { StatusProvider } from "./status-types.js";
 import type { MemoryStore, SearchMemoryInput, WriteMemoryInput } from "./memory-store.js";
 import type { SessionManager } from "./session-manager.js";
+import type { CreateTaskInput, TaskStore, UpdateTaskInput } from "./task-store.js";
+import type { TaskScheduler } from "./task-scheduler.js";
 
 /**
- * Simple HTTP file server for serving local images to web UI clients.
- * Runs on a separate port from the WebSocket server.
+ * HTTP API server for local Gateway APIs and file serving.
  */
-export class FileServer {
+export class ApiServer {
   private server: ReturnType<typeof createServer> | null = null;
   private readonly allowedRoots: string[];
   private statusProvider: StatusProvider | null = null;
   private memoryStore: MemoryStore | null = null;
   private sessionManager: SessionManager | null = null;
+  private taskStore: TaskStore | null = null;
+  private taskScheduler: TaskScheduler | null = null;
 
   constructor(
     private port: number = 3457,
@@ -38,19 +41,24 @@ export class FileServer {
     this.sessionManager = sessionManager;
   }
 
+  setTaskServices(taskStore: TaskStore, taskScheduler: TaskScheduler): void {
+    this.taskStore = taskStore;
+    this.taskScheduler = taskScheduler;
+  }
+
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = createServer((req, res) => this.handleRequest(req, res));
 
       this.server.on("error", (err) => {
-        console.error(`[FileServer] Error:`, err);
+        console.error(`[ApiServer] Error:`, err);
         reject(err);
       });
 
       this.server.listen(this.port, this.host, () => {
-        console.log(`[FileServer] Serving files at http://${this.host}:${this.port}`);
+        console.log(`[ApiServer] Serving API at http://${this.host}:${this.port}`);
         if (this.allowedRoots.length > 0) {
-          console.log(`[FileServer] Allowed roots: ${this.allowedRoots.join(", ")}`);
+          console.log(`[ApiServer] File roots: ${this.allowedRoots.join(", ")}`);
         }
         resolve();
       });
@@ -60,7 +68,7 @@ export class FileServer {
   stop(): void {
     this.server?.close();
     this.server = null;
-    console.log("[FileServer] Stopped");
+    console.log("[ApiServer] Stopped");
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -80,6 +88,11 @@ export class FileServer {
 
     if (url.startsWith("/session")) {
       await this.handleSessionRequest(req, res, url);
+      return;
+    }
+
+    if (url.startsWith("/api/tasks")) {
+      await this.handleTaskRequest(req, res, url, requestUrl);
       return;
     }
 
@@ -139,7 +152,7 @@ export class FileServer {
     stream.pipe(res);
 
     stream.on("error", (err) => {
-      console.error(`[FileServer] Error streaming ${fullPath}:`, err);
+      console.error(`[ApiServer] Error streaming ${fullPath}:`, err);
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end("Internal server error");
@@ -211,7 +224,7 @@ export class FileServer {
       this.sendJson(res, 404, { error: "Memory endpoint not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[FileServer] Memory request failed:", message);
+      console.error("[ApiServer] Memory request failed:", message);
       this.sendJson(res, 500, { error: message });
     }
   }
@@ -248,8 +261,83 @@ export class FileServer {
       this.sendJson(res, 404, { error: "Session endpoint not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[FileServer] Session request failed:", message);
+      console.error("[ApiServer] Session request failed:", message);
       this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private async handleTaskRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string,
+    requestUrl: URL
+  ): Promise<void> {
+    if (!this.taskStore || !this.taskScheduler) {
+      this.sendJson(res, 503, { error: "Task scheduler not available" });
+      return;
+    }
+
+    try {
+      const parts = path.split("/").filter(Boolean);
+      const taskId = parts[2];
+      const subresource = parts[3];
+
+      if (path === "/api/tasks" && req.method === "GET") {
+        this.sendJson(res, 200, { tasks: this.taskStore.listTasks() });
+        return;
+      }
+
+      if (path === "/api/tasks" && req.method === "POST") {
+        const body = await readJsonBody<CreateTaskInput>(req);
+        const task = this.taskStore.createTask(body);
+        this.taskScheduler.refreshTask(task.id);
+        this.sendJson(res, 201, { task: this.taskStore.getTask(task.id) });
+        return;
+      }
+
+      if (!taskId) {
+        this.sendJson(res, 404, { error: "Task endpoint not found" });
+        return;
+      }
+
+      if (subresource === undefined && req.method === "GET") {
+        this.sendJson(res, 200, { task: this.taskStore.getTask(taskId) });
+        return;
+      }
+
+      if (subresource === undefined && req.method === "PATCH") {
+        const body = await readJsonBody<UpdateTaskInput>(req);
+        const task = this.taskStore.updateTask(taskId, body);
+        this.taskScheduler.refreshTask(task.id);
+        this.sendJson(res, 200, { task: this.taskStore.getTask(task.id) });
+        return;
+      }
+
+      if (subresource === undefined && req.method === "DELETE") {
+        this.taskScheduler.removeTask(taskId);
+        this.taskStore.deleteTask(taskId);
+        this.sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (subresource === "runs" && req.method === "GET") {
+        const limit = Number(requestUrl.searchParams.get("limit") ?? 25);
+        this.sendJson(res, 200, { runs: this.taskStore.listRuns(taskId, limit) });
+        return;
+      }
+
+      if (subresource === "run" && req.method === "POST") {
+        const run = await this.taskScheduler.runNow(taskId);
+        this.sendJson(res, 200, { run });
+        return;
+      }
+
+      this.sendJson(res, 404, { error: "Task endpoint not found" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message.includes("not found") ? 404 : 400;
+      console.error("[ApiServer] Task request failed:", message);
+      this.sendJson(res, status, { error: message });
     }
   }
 

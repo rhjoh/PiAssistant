@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { BroadcastManager } from "./broadcast.js";
 import type { PiRpcClient } from "./pi-rpc.js";
-import type { FileServerStatus, StatusProvider } from "./status-types.js";
+import type { ApiServerStatus, StatusProvider } from "./status-types.js";
 
 export class GatewayStatusProvider implements StatusProvider {
   private heartbeatLastRun: Date | null = null;
@@ -29,14 +29,14 @@ export class GatewayStatusProvider implements StatusProvider {
     this.dailyContextLastRun = new Date();
   }
 
-  async getStatus(): Promise<FileServerStatus> {
+  async getStatus(): Promise<ApiServerStatus> {
     const clients = this.broadcastManager.getClients().map(c => ({
       id: c.id,
       type: c.type,
     }));
 
     // Fetch current model and context from Pi
-    let model: FileServerStatus["session"]["model"] | undefined;
+    let model: ApiServerStatus["session"]["model"] | undefined;
     let contextTokens: number | undefined;
     try {
       const stateResponse = await this.pi.getState();

@@ -487,7 +487,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     }
   }
 
-  private async sendAndWait(command: PiCommand): Promise<PiResponse> {
+  private async sendAndWait(command: PiCommand, timeoutMs = 30_000): Promise<PiResponse> {
     if (!this.isRunning) {
       throw new Error("Pi RPC not running");
     }
@@ -496,7 +496,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     const withId = { ...command, id };
 
     return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Pi RPC timed out after ${timeoutMs}ms: ${command.type}`));
+      }, timeoutMs);
+
       const cleanup = () => {
+        clearTimeout(timer);
         this.off("response", onResponse);
         this.off("error", onError);
       };

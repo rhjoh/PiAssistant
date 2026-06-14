@@ -17,14 +17,30 @@ import type { SessionManager } from "./session-manager.js";
 export class BroadcastManager {
   private clients = new Map<string, Client>();
   private currentPrompt:
-    | { message: string; clientIds: Set<string>; startedAt: number; originClientId: string }
+    | {
+        message: string;
+        clientIds: Set<string>;
+        startedAt: number;
+        originClientId: string;
+        origin: "user" | "task";
+        taskId?: string;
+        taskRunId?: string;
+        taskName?: string;
+      }
     | null = null;
   private sessionManager: SessionManager | null = null;
   private lastUserActivityAt = 0;
+  private taskPromptQueue: Promise<unknown> = Promise.resolve();
   // Cumulative session token usage
   private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 
-  constructor(private pi: PiRpcClient) {
+  private broadcastThinking: boolean;
+
+  constructor(
+    private pi: PiRpcClient,
+    options?: { broadcastThinking?: boolean }
+  ) {
+    this.broadcastThinking = options?.broadcastThinking ?? true;
     this.setupPiListeners();
     this.setupPiExitHandler();
   }
@@ -83,7 +99,13 @@ export class BroadcastManager {
 
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
-    this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
+    this.currentPrompt = {
+      message,
+      clientIds,
+      startedAt: Date.now(),
+      originClientId: originatingClientId,
+      origin: "user",
+    };
 
     const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
     console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}"`);
@@ -108,6 +130,17 @@ export class BroadcastManager {
     return clientIds;
   }
 
+  async sendTaskPrompt(input: {
+    taskId: string;
+    runId: string;
+    taskName: string;
+    prompt: string;
+  }): Promise<string> {
+    const run = this.taskPromptQueue.then(() => this.runTaskPrompt(input));
+    this.taskPromptQueue = run.catch(() => undefined);
+    return run;
+  }
+
   /**
    * Send a prompt with images to Pi and broadcast to all clients
    * Returns the clients that will receive this response
@@ -129,7 +162,13 @@ export class BroadcastManager {
 
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
-    this.currentPrompt = { message, clientIds, startedAt: Date.now(), originClientId: originatingClientId };
+    this.currentPrompt = {
+      message,
+      clientIds,
+      startedAt: Date.now(),
+      originClientId: originatingClientId,
+      origin: "user",
+    };
 
     const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
     console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}" (${images.length} image(s))`);
@@ -261,6 +300,66 @@ export class BroadcastManager {
     return Date.now() - this.lastUserActivityAt < windowMs;
   }
 
+  private async runTaskPrompt(input: {
+    taskId: string;
+    runId: string;
+    taskName: string;
+    prompt: string;
+  }): Promise<string> {
+    await this.waitForIdle();
+
+    const clientIds = new Set(this.clients.keys());
+    this.currentPrompt = {
+      message: input.prompt,
+      clientIds,
+      startedAt: Date.now(),
+      originClientId: "task",
+      origin: "task",
+      taskId: input.taskId,
+      taskRunId: input.runId,
+      taskName: input.taskName,
+    };
+
+    console.log(
+      `[Broadcast] Task prompt started (${input.taskId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${input.taskName}"`
+    );
+
+    try {
+      return await this.pi.prompt(input.prompt, { source: "user" });
+    } catch (error) {
+      this.currentPrompt = null;
+      await this.broadcast({
+        type: "error",
+        data: {
+          message: error instanceof Error ? error.message : "Task prompt failed",
+          origin: "task",
+          taskId: input.taskId,
+          taskRunId: input.runId,
+        },
+      });
+      throw error;
+    }
+  }
+
+  private async waitForIdle(): Promise<void> {
+    while (this.isPromptInFlight()) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
+  private taskMetadata():
+    | { origin: "task"; taskId: string; taskRunId: string; taskName?: string }
+    | Record<string, never> {
+    const prompt = this.currentPrompt;
+    if (prompt?.origin !== "task" || !prompt.taskId || !prompt.taskRunId) return {};
+    return {
+      origin: "task",
+      taskId: prompt.taskId,
+      taskRunId: prompt.taskRunId,
+      taskName: prompt.taskName,
+    };
+  }
+
   private setupPiListeners(): void {
     // Track accumulated text for final response
     let currentText = "";
@@ -273,10 +372,17 @@ export class BroadcastManager {
 
     const flushThinkingBlock = async (): Promise<void> => {
       if (!currentThinkingId) return;
-      await this.broadcast({
-        type: "thinking_done",
-        data: { thinkingId: currentThinkingId, content: currentThinking, seq: thinkingSeq },
-      });
+      if (this.broadcastThinking) {
+        await this.broadcast({
+          type: "thinking_done",
+          data: {
+            thinkingId: currentThinkingId,
+            content: currentThinking,
+            seq: thinkingSeq,
+            ...this.taskMetadata(),
+          },
+        });
+      }
       currentThinking = "";
       currentThinkingId = null;
     };
@@ -325,6 +431,7 @@ export class BroadcastManager {
             toolName: event.toolName || "tool",
             args: event.args,
             label,
+            ...this.taskMetadata(),
           },
         });
 
@@ -335,6 +442,7 @@ export class BroadcastManager {
             toolCallId: event.toolCallId,
             output: "",
             truncated: false,
+            ...this.taskMetadata(),
           },
         });
         lastToolOutputById.set(event.toolCallId, "");
@@ -353,6 +461,7 @@ export class BroadcastManager {
               toolCallId: event.toolCallId,
               output: truncated.text,
               truncated: truncated.wasTruncated,
+              ...this.taskMetadata(),
             },
           });
         }
@@ -368,6 +477,7 @@ export class BroadcastManager {
             data: {
               source: image.source,
               alt: image.alt,
+              ...this.taskMetadata(),
             },
           });
         }
@@ -381,6 +491,7 @@ export class BroadcastManager {
             toolCallId: event.toolCallId,
             output: truncated.text,
             truncated: truncated.wasTruncated,
+            ...this.taskMetadata(),
           },
         });
         lastToolOutputById.delete(event.toolCallId);
@@ -390,6 +501,7 @@ export class BroadcastManager {
           data: {
             toolCallId: event.toolCallId,
             toolName: event.toolName || "tool",
+            ...this.taskMetadata(),
           },
         });
 
@@ -411,7 +523,7 @@ export class BroadcastManager {
             // Only broadcast prose deltas (not tool output)
             await this.broadcast({
               type: "text_delta",
-              data: { content: delta },
+              data: { content: delta, ...this.taskMetadata() },
             });
           }
         }
@@ -428,10 +540,14 @@ export class BroadcastManager {
           currentThinking += msgEvent.delta;
           // Skip heartbeat responses
           const delta = msgEvent.delta;
-          if (!delta.includes("[[NO_ACTION]]") && !delta.startsWith("[Heartbeat]")) {
+          if (
+            this.broadcastThinking &&
+            !delta.includes("[[NO_ACTION]]") &&
+            !delta.startsWith("[Heartbeat]")
+          ) {
             await this.broadcast({
               type: "thinking_delta",
-              data: { thinkingId: currentThinkingId, content: delta, seq: thinkingSeq },
+              data: { thinkingId: currentThinkingId, content: delta, seq: thinkingSeq, ...this.taskMetadata() },
             });
           }
         }
@@ -459,6 +575,7 @@ export class BroadcastManager {
             data: {
               source: image.source,
               alt: image.alt,
+              ...this.taskMetadata(),
             },
           });
         }
@@ -512,7 +629,7 @@ export class BroadcastManager {
 
         await this.broadcast({
           type: "done",
-          data: { finalText: imageExtractions.textOnly, usage: enrichedUsage },
+          data: { finalText: imageExtractions.textOnly, usage: enrichedUsage, ...this.taskMetadata() },
         });
 
         // Reset state for next prompt
@@ -524,7 +641,10 @@ export class BroadcastManager {
       }
     };
 
-    // Rate limiting for events to prevent CPU spin
+    // Rate limiting for events to prevent CPU spin.
+    // Lifecycle events (agent_end, etc.) must never be suppressed or the
+    // gateway enters a stuck state where currentPrompt is never cleared.
+    const LIFECYCLE_EVENTS = new Set(["agent_end"]);
     let lastEventTime = 0;
     let eventCount = 0;
     const RATE_WINDOW_MS = 1000;
@@ -537,10 +657,10 @@ export class BroadcastManager {
         eventCount = 0;
       }
       eventCount++;
-      
-      if (eventCount > MAX_EVENTS_PER_WINDOW) {
+
+      if (eventCount > MAX_EVENTS_PER_WINDOW && !LIFECYCLE_EVENTS.has(event.type)) {
         if (eventCount === MAX_EVENTS_PER_WINDOW + 1) {
-          console.error("[Broadcast] Rate limit exceeded - suppressing events");
+          console.error("[Broadcast] Rate limit exceeded - suppressing non-lifecycle events");
         }
         return;
       }
@@ -990,7 +1110,4 @@ export class BroadcastManager {
     ].join("\n");
   }
 
-  async handleTakeoverCommand(): Promise<string> {
-    return "Takeover command not yet implemented for WebSocket clients.";
   }
-}

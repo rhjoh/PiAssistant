@@ -155,7 +155,8 @@ export type ModelHandler = (ctx: Context, args: string) => Promise<string | void
 export type SessionHandler = (ctx: Context) => Promise<string | void>;
 
 export type NewSessionHandler = (ctx: Context) => Promise<string | void>;
-export type TakeoverHandler = (ctx: Context) => Promise<string | void>;
+
+export type TaskHandler = (ctx: Context, args: string) => Promise<string | void>;
 
 export class TelegramBot {
   private bot: Bot;
@@ -164,38 +165,40 @@ export class TelegramBot {
   private modelHandler: ModelHandler | null = null;
   private sessionHandler: SessionHandler | null = null;
   private newSessionHandler: NewSessionHandler | null = null;
-  private takeoverHandler: TakeoverHandler | null = null;
+  private taskHandler: TaskHandler | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
     this.setupHandlers();
   }
 
+  /**
+   * Check that the user is authorized. Returns true only if
+   * TELEGRAM_ALLOWED_USER_ID is configured and matches the sender.
+   * If not configured, all access is denied (fail-closed).
+   */
+  private isAuthorized(ctx: Context): boolean {
+    if (!config.telegram.allowedUserId) {
+      console.warn("[Telegram] No TELEGRAM_ALLOWED_USER_ID configured, denying access");
+      return false;
+    }
+    if (ctx.from?.id !== config.telegram.allowedUserId) {
+      console.log(`[Telegram] Unauthorized command from user ${ctx.from?.id}, ignoring`);
+      return false;
+    }
+    return true;
+  }
+
   private setupHandlers(): void {
     // Handle /start command
     this.bot.command("start", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
       await ctx.reply("Gateway connected. Send me a message to talk to Pi.");
-    });
-
-    // Handle /takeover command
-    this.bot.command("takeover", async (ctx) => {
-      if (!this.takeoverHandler) {
-        await ctx.reply("No takeover handler configured.");
-        return;
-      }
-      try {
-        const response = await this.takeoverHandler(ctx);
-        if (response) {
-          await this.replyLong(ctx, response);
-        }
-      } catch (err) {
-        console.error("[Telegram] Takeover handler error:", err);
-        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
-      }
     });
 
     // Handle /status command
     this.bot.command("status", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
       if (!this.statusHandler) {
         await ctx.reply("No status handler configured.");
         return;
@@ -214,6 +217,7 @@ export class TelegramBot {
 
     // Handle /model command
     this.bot.command("model", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
       if (!this.modelHandler) {
         await ctx.reply("No model handler configured.");
         return;
@@ -233,8 +237,31 @@ export class TelegramBot {
       }
     });
 
+    // Handle /task command
+    this.bot.command("task", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
+      if (!this.taskHandler) {
+        await ctx.reply("No task handler configured.");
+        return;
+      }
+
+      const text = ctx.message?.text ?? "";
+      const args = text.split(" ").slice(1).join(" ").trim();
+
+      try {
+        const response = await this.taskHandler(ctx, args);
+        if (response) {
+          await this.replyLong(ctx, response);
+        }
+      } catch (err) {
+        console.error("[Telegram] Task handler error:", err);
+        await ctx.reply(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
+    });
+
     // Handle /session command
     this.bot.command("session", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
       if (!this.sessionHandler) {
         await ctx.reply("No session handler configured.");
         return;
@@ -253,6 +280,7 @@ export class TelegramBot {
 
     // Handle /new command
     this.bot.command("new", async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
       if (!this.newSessionHandler) {
         await ctx.reply("No new session handler configured.");
         return;
@@ -271,11 +299,7 @@ export class TelegramBot {
 
     // Handle all text messages
     this.bot.on("message:text", async (ctx) => {
-      // Security: only respond to whitelisted user
-      if (config.telegram.allowedUserId && ctx.from?.id !== config.telegram.allowedUserId) {
-        console.log(`[Telegram] Ignoring message from non-whitelisted user: ${ctx.from?.id}`);
-        return;
-      }
+      if (!this.isAuthorized(ctx)) return;
 
       const text = ctx.message.text;
 
@@ -316,8 +340,8 @@ export class TelegramBot {
     this.newSessionHandler = handler;
   }
 
-  onTakeover(handler: TakeoverHandler): void {
-    this.takeoverHandler = handler;
+  onTask(handler: TaskHandler): void {
+    this.taskHandler = handler;
   }
 
   /**
@@ -476,7 +500,6 @@ export class TelegramBot {
       { command: "model", description: "View or change AI model" },
       { command: "session", description: "Show session info and stats" },
       { command: "new", description: "Archive session and start fresh" },
-      { command: "takeover", description: "Reclaim session from TUI" },
     ]);
     console.log("[Telegram] Commands registered");
 

@@ -4,6 +4,8 @@ import type { Client, WSClientMessage, WSServerMessage } from "./types-ws.js";
 import { config } from "./config.js";
 import { ImageStorage } from "./image-storage.js";
 import type { PiRpcClient } from "./pi-rpc.js";
+import type { TaskScheduler } from "./task-scheduler.js";
+import type { TaskStore } from "./task-store.js";
 import {
   MessageRouter,
   PromptHandler,
@@ -41,7 +43,9 @@ export class WebSocketGateway {
     private broadcastManager: BroadcastManager,
     private pi: PiRpcClient,
     private port: number = 3456,
-    private host: string = "127.0.0.1"
+    private host: string = "127.0.0.1",
+    private taskStore?: TaskStore,
+    private taskScheduler?: TaskScheduler
   ) {
     this.imageStorage = new ImageStorage(config.images.dir);
 
@@ -52,7 +56,7 @@ export class WebSocketGateway {
       new AbortHandler(broadcastManager),
       new GetStateHandler(broadcastManager),
       new GetHistoryHandler(this.imageStorage, config.pi.sessionPath),
-      new CommandHandler({ broadcastManager }),
+      new CommandHandler({ broadcastManager, taskStore, taskScheduler }),
       new ToolCallHandler(broadcastManager),
       new ToolResultHandler(broadcastManager),
       new PingHandler(),

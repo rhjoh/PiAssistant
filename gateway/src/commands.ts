@@ -150,31 +150,3 @@ export async function handleNew(sessionManager: SessionManager, _sessionPath: st
 
   return lines.join("\n");
 }
-
-// Handle /takeover command - force reclaim session from TUI
-export async function handleTakeover(
-  pi: PiRpcClient,
-  sessionWatcher: SessionWatcher,
-): Promise<string> {
-  try {
-    console.log("[Gateway] /takeover: Checking for active TUI...");
-    const result = await sessionWatcher.killTui();
-
-    if (result.killed) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    await pi.reload();
-
-    return [
-      `✅ Session reclaimed`,
-      ``,
-      result.killed ? `Killed TUI (PID ${result.pid})` : "No active TUI found",
-      `Pi RPC reloaded`,
-      ``,
-      `Send your message now.`,
-    ].join("\n");
-  } catch (err) {
-    console.error("[Gateway] /takeover failed:", err);
-    return `❌ Failed to reclaim session: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}

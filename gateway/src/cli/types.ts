@@ -1,4 +1,4 @@
-import type { FileServerStatus } from "../status-types.js";
+import type { ApiServerStatus } from "../status-types.js";
 
 export interface PidState {
   pid: number;
@@ -11,4 +11,4 @@ export interface PidState {
   };
 }
 
-export type GatewayStatus = FileServerStatus;
+export type GatewayStatus = ApiServerStatus;

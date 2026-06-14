@@ -33,11 +33,22 @@ export const config = {
       ? parseInt(process.env.GATEWAY_WS_PORT, 10)
       : 3456,
   },
-  fileServer: {
+  apiServer: {
     host: process.env.FILE_SERVER_HOST ?? "127.0.0.1",
     port: process.env.FILE_SERVER_PORT
       ? parseInt(process.env.FILE_SERVER_PORT, 10)
       : 3457,
+  },
+  tasks: {
+    enabled: process.env.TASK_SCHEDULER_ENABLED
+      ? process.env.TASK_SCHEDULER_ENABLED === "true"
+      : true,
+    dbPath: process.env.TASK_DB_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "tasks", "tasks.sqlite"),
+    timezone: process.env.TASK_DEFAULT_TIMEZONE ?? "Australia/Melbourne",
+    missedRunGraceMs: process.env.TASK_MISSED_RUN_GRACE_MS
+      ? parseInt(process.env.TASK_MISSED_RUN_GRACE_MS, 10)
+      : 0,
   },
   runtime: {
     runDir: process.env.RUNTIME_DIR
@@ -48,6 +59,11 @@ export const config = {
       ?? join(process.env.PI_CWD ?? homedir(), "run", "personalos.pid"),
     logFile: process.env.LOG_FILE
       ?? join(process.env.PI_CWD ?? homedir(), "logs", "gateway.log"),
+  },
+  broadcast: {
+    thinkingEnabled: process.env.BROADCAST_THINKING_ENABLED
+      ? process.env.BROADCAST_THINKING_ENABLED === "true"
+      : true,
   },
   heartbeat: {
     intervalMs: process.env.HEARTBEAT_INTERVAL_MS
@@ -99,10 +115,13 @@ export function validateConfig(): void {
   if (!config.telegram.token) {
     throw new Error("TELEGRAM_BOT_TOKEN environment variable is required");
   }
-  if (!Number.isInteger(config.fileServer.port) || config.fileServer.port <= 0) {
+  if (!Number.isInteger(config.apiServer.port) || config.apiServer.port <= 0) {
     throw new Error("FILE_SERVER_PORT must be a positive integer");
   }
   if (!Number.isInteger(config.webSocket.port) || config.webSocket.port <= 0) {
     throw new Error("GATEWAY_WS_PORT must be a positive integer");
+  }
+  if (!Number.isInteger(config.tasks.missedRunGraceMs) || config.tasks.missedRunGraceMs < 0) {
+    throw new Error("TASK_MISSED_RUN_GRACE_MS must be a non-negative integer");
   }
 }
