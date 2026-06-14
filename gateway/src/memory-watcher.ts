@@ -136,13 +136,14 @@ export class MemoryWatcher {
       const bytesToRead = stat.size - state.offset;
       const newLines = await this.readNewLines(sessionPath, state.offset);
       console.log(`[MemoryWatcher] ${sessionPath}: read ${newLines.length} lines (${bytesToRead} bytes)`);
-      state.offset = stat.size;
-      state.mtimeMs = stat.mtimeMs;
 
       for (const line of newLines) {
         const entry = this.parseMemoryEntry(line, sessionPath);
         if (entry) entries.push(entry);
       }
+      // Update offset AFTER processing to avoid data loss on crash
+      state.offset = stat.size;
+      state.mtimeMs = stat.mtimeMs;
     }
 
     entries.sort((a, b) => a.timestamp - b.timestamp);

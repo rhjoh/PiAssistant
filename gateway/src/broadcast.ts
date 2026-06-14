@@ -30,7 +30,7 @@ export class BroadcastManager {
     | null = null;
   private sessionManager: SessionManager | null = null;
   private lastUserActivityAt = 0;
-  private taskPromptQueue: Promise<unknown> = Promise.resolve();
+  private promptQueue: Promise<unknown> = Promise.resolve();
   // Cumulative session token usage
   private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 
@@ -87,47 +87,59 @@ export class BroadcastManager {
    * Returns the clients that will receive this response
    */
   async sendPrompt(message: string, originatingClientId: string): Promise<Set<string>> {
-    if (this.currentPrompt) {
-      throw new Error("Assistant is busy with another prompt");
-    }
-    // Internal prompts (heartbeat) are non-blocking — they queue behind the user prompt
-    if (this.pi.isPromptActive) {
-      console.log("[Broadcast] User prompt queued behind active internal prompt (heartbeat)");
-    }
-
-    this.lastUserActivityAt = Date.now();
-
-    // Track which clients are participating in this prompt
-    const clientIds = new Set(this.clients.keys());
-    this.currentPrompt = {
-      message,
-      clientIds,
-      startedAt: Date.now(),
-      originClientId: originatingClientId,
-      origin: "user",
-    };
-
-    const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
-    console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}"`);
-
-    // Broadcast user message to all OTHER clients (sender already showed it locally)
-    await this.broadcast({
-      type: "user_message",
-      data: { content: message, source: originatingClientId },
-    }, originatingClientId);
-
-    // Send prompt to Pi (this starts the streaming)
-    // Note: We don't await here - Pi runs asynchronously and emits events
-    this.pi.prompt(message, { source: "user" }).catch((err) => {
-      console.error("[Broadcast] Pi prompt error:", err);
-      this.currentPrompt = null;
-      this.broadcast({
-        type: "error",
-        data: { message: err instanceof Error ? err.message : "Unknown error" },
-      });
+    // Serialize through promptQueue to prevent race between user and task prompts
+    let resolveResult!: (value: Set<string>) => void;
+    let rejectResult!: (error: Error) => void;
+    const resultPromise = new Promise<Set<string>>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
     });
 
-    return clientIds;
+    this.promptQueue = this.promptQueue.then(async () => {
+      if (this.currentPrompt) {
+        rejectResult(new Error("Assistant is busy with another prompt"));
+        return;
+      }
+
+      if (this.pi.isPromptActive) {
+        console.log("[Broadcast] User prompt queued behind active internal prompt (heartbeat)");
+      }
+
+      this.lastUserActivityAt = Date.now();
+
+      const clientIds = new Set(this.clients.keys());
+      this.currentPrompt = {
+        message,
+        clientIds,
+        startedAt: Date.now(),
+        originClientId: originatingClientId,
+        origin: "user",
+      };
+
+      const preview = message.length > 60 ? message.slice(0, 60).replace(/\s+/g, " ").trim() + "..." : message;
+      console.log(`[Broadcast] Prompt processing started (from ${originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}): "${preview}"`);
+
+      await this.broadcast({
+        type: "user_message",
+        data: { content: message, source: originatingClientId },
+      }, originatingClientId);
+
+      this.pi.prompt(message, { source: "user" }).catch((err) => {
+        console.error("[Broadcast] Pi prompt error:", err);
+        this.currentPrompt = null;
+        this.broadcast({
+          type: "error",
+          data: { message: err instanceof Error ? err.message : "Unknown error" },
+        });
+      });
+
+      resolveResult(clientIds);
+    }).catch((err) => {
+      // If the queue chain itself fails, reject the result promise
+      try { rejectResult(err instanceof Error ? err : new Error(String(err))); } catch { /* already settled */ }
+    });
+
+    return resultPromise;
   }
 
   async sendTaskPrompt(input: {
@@ -136,8 +148,8 @@ export class BroadcastManager {
     taskName: string;
     prompt: string;
   }): Promise<string> {
-    const run = this.taskPromptQueue.then(() => this.runTaskPrompt(input));
-    this.taskPromptQueue = run.catch(() => undefined);
+    const run = this.promptQueue.then(() => this.runTaskPrompt(input));
+    this.promptQueue = run.catch(() => undefined);
     return run;
   }
 
@@ -341,8 +353,12 @@ export class BroadcastManager {
     }
   }
 
-  private async waitForIdle(): Promise<void> {
+  private async waitForIdle(timeoutMs = 10 * 60 * 1000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
     while (this.isPromptInFlight()) {
+      if (Date.now() > deadline) {
+        throw new Error(`waitForIdle timed out after ${timeoutMs / 1000}s`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }

@@ -115,6 +115,21 @@ export function validateConfig(): void {
   if (!config.telegram.token) {
     throw new Error("TELEGRAM_BOT_TOKEN environment variable is required");
   }
+  // Guard against NaN from parseInt on non-numeric env vars
+  for (const [name, value] of [
+    ["GATEWAY_WS_PORT", config.webSocket.port],
+    ["FILE_SERVER_PORT", config.apiServer.port],
+    ["TASK_MISSED_RUN_GRACE_MS", config.tasks.missedRunGraceMs],
+    ["HEARTBEAT_INTERVAL_MS", config.heartbeat.intervalMs],
+    ["MEMORY_BRIEFING_MAX_ITEMS", config.memory.briefingMaxItems],
+    ["DAILY_CONTEXT_INTERVAL_MS", config.memory.dailyContextIntervalMs],
+    ["DAILY_MEMORY_EXTRACTION_HOUR", config.memory.dailyExtractionHour],
+    ["DAILY_CONTEXT_MAX_TRANSCRIPT_CHARS", config.memory.dailyContextMaxTranscriptChars],
+  ] as const) {
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new Error(`${name} must be a valid number, got: ${value}`);
+    }
+  }
   if (!Number.isInteger(config.apiServer.port) || config.apiServer.port <= 0) {
     throw new Error("FILE_SERVER_PORT must be a positive integer");
   }
@@ -123,5 +138,8 @@ export function validateConfig(): void {
   }
   if (!Number.isInteger(config.tasks.missedRunGraceMs) || config.tasks.missedRunGraceMs < 0) {
     throw new Error("TASK_MISSED_RUN_GRACE_MS must be a non-negative integer");
+  }
+  if (config.telegram.allowedUserId !== null && (!Number.isInteger(config.telegram.allowedUserId) || config.telegram.allowedUserId <= 0)) {
+    throw new Error("TELEGRAM_ALLOWED_USER_ID must be a positive integer when set");
   }
 }

@@ -357,7 +357,14 @@ export class MemoryStore {
       END;
     `);
 
-    db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run();
+    // Rebuild FTS index only when empty (first creation or after corruption).
+    // The triggers keep FTS in sync for all writes, so rebuild is not needed
+    // on every startup -- only when the FTS table has no rows.
+    const ftsRowCount = db.prepare("SELECT count(*) as cnt FROM memories_fts").get() as { cnt: number };
+    if (ftsRowCount.cnt === 0) {
+      console.log("[MemoryStore] Rebuilding FTS index (empty FTS table)");
+      db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run();
+    }
   }
 
   private async addVectorSearchResults(

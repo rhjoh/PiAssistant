@@ -159,12 +159,13 @@ export class DailyContextManager {
       }
 
       const lines = await readNewLines(sessionPath, state.offset);
-      state.offset = fileStat.size;
-      state.mtimeMs = fileStat.mtimeMs;
+      // Update offset AFTER parsing to avoid data loss on crash
       for (const line of lines) {
         const entry = parseSessionEntry(line, sessionPath);
         if (entry) entries.push(entry);
       }
+      state.offset = fileStat.size;
+      state.mtimeMs = fileStat.mtimeMs;
     }
 
     entries.sort((a, b) => a.timestamp - b.timestamp);

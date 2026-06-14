@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, realpathSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
 import type { StatusProvider } from "./status-types.js";
@@ -116,7 +116,7 @@ export class ApiServer {
     // Expand ~ to home directory
     const resolvedPath = this.expandHome(filePath);
 
-    // Security: prevent directory traversal
+    // Security: prevent directory traversal (including through symlinks)
     const fullPath = resolve(resolvedPath);
     if (!this.isAllowedPath(fullPath)) {
       res.writeHead(403, { "Content-Type": "text/plain" });
@@ -131,7 +131,15 @@ export class ApiServer {
       return;
     }
 
-    const stats = statSync(fullPath);
+    // Security: resolve symlinks and re-check that the real path is still allowed
+    const realPath = realpathSync(fullPath);
+    if (!this.isAllowedPath(realPath)) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("Forbidden: symlink target outside allowed roots");
+      return;
+    }
+
+    const stats = statSync(realPath);
     if (!stats.isFile()) {
       res.writeHead(403, { "Content-Type": "text/plain" });
       res.end("Forbidden: not a file");
@@ -139,7 +147,7 @@ export class ApiServer {
     }
 
     // Set content type based on extension
-    const contentType = lookup(extname(fullPath)) || "application/octet-stream";
+    const contentType = lookup(extname(realPath)) || "application/octet-stream";
 
     // Stream the file
     res.writeHead(200, {
@@ -148,7 +156,7 @@ export class ApiServer {
       "Cache-Control": "public, max-age=3600",
     });
 
-    const stream = createReadStream(fullPath);
+    const stream = createReadStream(realPath);
     stream.pipe(res);
 
     stream.on("error", (err) => {

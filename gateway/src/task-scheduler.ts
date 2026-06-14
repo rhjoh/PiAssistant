@@ -62,7 +62,8 @@ export class TaskScheduler {
     const scheduledTask = cron.schedule(
       task.cron,
       () => {
-        this.taskRunner
+        // Return the promise so noOverlap can track whether execution is in progress
+        return this.taskRunner
           .runTask(task.id, "scheduled")
           .then(() => this.safeRefreshTask(task.id))
           .catch((error) => {
@@ -90,9 +91,11 @@ export class TaskScheduler {
     try {
       this.refreshTask(taskId);
     } catch (error) {
+      // Task may have been deleted between scheduling and completion -- that's fine.
+      // Don't unschedule: the task will be refreshed on the next tick if it still exists,
+      // or silently cleaned up if deleted via removeTask().
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[TaskScheduler] Could not refresh task ${taskId}: ${message}`);
-      this.unschedule(taskId);
     }
   }
 
