@@ -497,9 +497,13 @@ function printGatewayStatus(s: GatewayStatus): void {
 
   console.log("");
   console.log(`heartbeat: ${minsSince(s.heartbeat.lastRunAt)} (${s.heartbeat.intervalMs / 60000}m interval)`);
-  console.log(`memory watcher: ${s.memoryWatcher.enabled ? "enabled" : "disabled"}`);
-  if (s.memoryWatcher.enabled) {
-    console.log(`  last run: ${minsSince(s.memoryWatcher.lastRunAt)} (${s.memoryWatcher.intervalMs / 60000}m interval)`);
+  if (s.dailyContext) {
+    console.log(`daily context: last run ${minsSince(s.dailyContext.lastRunAt)}`);
+  } else if (s.memoryWatcher) {
+    console.log(`legacy memory watcher: ${s.memoryWatcher.enabled ? "enabled" : "disabled"}`);
+    if (s.memoryWatcher.enabled) {
+      console.log(`  last run: ${minsSince(s.memoryWatcher.lastRunAt)} (${s.memoryWatcher.intervalMs / 60000}m interval)`);
+    }
   }
 }
 

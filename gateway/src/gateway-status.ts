@@ -5,7 +5,7 @@ import type { FileServerStatus, StatusProvider } from "./status-types.js";
 
 export class GatewayStatusProvider implements StatusProvider {
   private heartbeatLastRun: Date | null = null;
-  private memoryWatcherLastRun: Date | null = null;
+  private dailyContextLastRun: Date | null = null;
   private wsRunning = false;
 
   constructor(
@@ -13,9 +13,8 @@ export class GatewayStatusProvider implements StatusProvider {
     private pi: PiRpcClient,
     private sessionPath: string,
     private wsPort: number,
-    private heartbeatIntervalMs: number,
-    private memoryWatcherIntervalMs: number,
-    private memoryWatcherEnabled: boolean
+    private wsHost: string,
+    private heartbeatIntervalMs: number
   ) {}
 
   setWebsocketRunning(running: boolean): void {
@@ -26,8 +25,8 @@ export class GatewayStatusProvider implements StatusProvider {
     this.heartbeatLastRun = new Date();
   }
 
-  recordMemoryWatcherRun(): void {
-    this.memoryWatcherLastRun = new Date();
+  recordDailyContextRun(): void {
+    this.dailyContextLastRun = new Date();
   }
 
   async getStatus(): Promise<FileServerStatus> {
@@ -61,6 +60,7 @@ export class GatewayStatusProvider implements StatusProvider {
     return {
       websocket: {
         running: this.wsRunning,
+        host: this.wsHost,
         port: this.wsPort,
         clientCount: clients.length,
         clients,
@@ -69,10 +69,8 @@ export class GatewayStatusProvider implements StatusProvider {
         lastRunAt: this.heartbeatLastRun?.toISOString() ?? null,
         intervalMs: this.heartbeatIntervalMs,
       },
-      memoryWatcher: {
-        lastRunAt: this.memoryWatcherLastRun?.toISOString() ?? null,
-        intervalMs: this.memoryWatcherIntervalMs,
-        enabled: this.memoryWatcherEnabled,
+      dailyContext: {
+        lastRunAt: this.dailyContextLastRun?.toISOString() ?? null,
       },
       session: {
         path: this.sessionPath,

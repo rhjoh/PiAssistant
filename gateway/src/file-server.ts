@@ -3,6 +3,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
 import type { StatusProvider } from "./status-types.js";
+import type { MemoryStore, SearchMemoryInput, WriteMemoryInput } from "./memory-store.js";
 
 /**
  * Simple HTTP file server for serving local images to web UI clients.
@@ -12,17 +13,23 @@ export class FileServer {
   private server: ReturnType<typeof createServer> | null = null;
   private readonly allowedRoots: string[];
   private statusProvider: StatusProvider | null = null;
+  private memoryStore: MemoryStore | null = null;
 
   constructor(
     private port: number = 3457,
     allowedRoots: string[] = [],
-    private wsPort: number = 3456
+    private wsPort: number = 3456,
+    private host: string = "127.0.0.1"
   ) {
     this.allowedRoots = allowedRoots.map((root) => resolve(this.expandHome(root)));
   }
 
   setStatusProvider(provider: StatusProvider): void {
     this.statusProvider = provider;
+  }
+
+  setMemoryStore(store: MemoryStore): void {
+    this.memoryStore = store;
   }
 
   start(): Promise<void> {
@@ -34,8 +41,8 @@ export class FileServer {
         reject(err);
       });
 
-      this.server.listen(this.port, "127.0.0.1", () => {
-        console.log(`[FileServer] Serving files at http://127.0.0.1:${this.port}`);
+      this.server.listen(this.port, this.host, () => {
+        console.log(`[FileServer] Serving files at http://${this.host}:${this.port}`);
         if (this.allowedRoots.length > 0) {
           console.log(`[FileServer] Allowed roots: ${this.allowedRoots.join(", ")}`);
         }
@@ -51,11 +58,17 @@ export class FileServer {
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = req.url ?? "/";
+    const requestUrl = new URL(req.url ?? "/", `http://${this.host}:${this.port}`);
+    const url = requestUrl.pathname;
 
     // Status endpoint
     if (url === "/status" && req.method === "GET") {
       await this.handleStatusRequest(res);
+      return;
+    }
+
+    if (url.startsWith("/memory/")) {
+      await this.handleMemoryRequest(req, res, url);
       return;
     }
 
@@ -67,7 +80,7 @@ export class FileServer {
     }
 
     // Extract path and resolve safely
-    const filePath = decodeURIComponent(url.slice("/files/".length));
+    const filePath = decodeURIComponent(requestUrl.pathname.slice("/files/".length));
 
     // Security: only allow absolute paths
     if (!filePath.startsWith("/") && !filePath.startsWith("~/")) {
@@ -138,6 +151,68 @@ export class FileServer {
     res.end(JSON.stringify(status, null, 2));
   }
 
+  private async handleMemoryRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string
+  ): Promise<void> {
+    if (!this.memoryStore) {
+      this.sendJson(res, 503, { error: "Memory store not available" });
+      return;
+    }
+
+    try {
+      if (path === "/memory/search" && req.method === "POST") {
+        const body = await readJsonBody<SearchMemoryInput>(req);
+        const results = await this.memoryStore.searchMemory(body);
+        this.sendJson(res, 200, { results });
+        return;
+      }
+
+      if (path === "/memory/write" && req.method === "POST") {
+        const body = await readJsonBody<WriteMemoryInput>(req);
+        const memory = await this.memoryStore.writeMemory(body);
+        await this.memoryStore.writeBriefingFile();
+        this.sendJson(res, 200, { memory });
+        return;
+      }
+
+      if (path === "/memory/briefing" && req.method === "GET") {
+        const briefing = this.memoryStore.buildBriefing();
+        res.writeHead(200, {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "Cache-Control": "no-cache",
+        });
+        res.end(briefing);
+        return;
+      }
+
+      if (path === "/memory/briefing" && req.method === "POST") {
+        const body = await readJsonBody<{ project?: string; maxItems?: number }>(req);
+        const briefing = this.memoryStore.buildBriefing({
+          project: body.project,
+          maxItems: body.maxItems,
+        });
+        this.sendJson(res, 200, { briefing });
+        return;
+      }
+
+      this.sendJson(res, 404, { error: "Memory endpoint not found" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[FileServer] Memory request failed:", message);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private sendJson(res: ServerResponse, status: number, body: unknown): void {
+    res.writeHead(status, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache",
+    });
+    res.end(JSON.stringify(body, null, 2));
+  }
+
   private expandHome(pathValue: string): string {
     return pathValue.startsWith("~/")
       ? pathValue.replace("~", process.env.HOME || "/")
@@ -152,4 +227,21 @@ export class FileServer {
       fullPath === root || fullPath.startsWith(`${root}${sep}`)
     );
   }
+}
+
+async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > 1024 * 1024) {
+      throw new Error("Request body too large");
+    }
+    chunks.push(buffer);
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {} as T;
+  return JSON.parse(raw) as T;
 }

@@ -27,7 +27,14 @@ export const config = {
     dir: process.env.IMAGE_DIR
       ?? join(process.env.PI_CWD ?? homedir(), "images"),
   },
+  webSocket: {
+    host: process.env.GATEWAY_WS_HOST ?? "127.0.0.1",
+    port: process.env.GATEWAY_WS_PORT
+      ? parseInt(process.env.GATEWAY_WS_PORT, 10)
+      : 3456,
+  },
   fileServer: {
+    host: process.env.FILE_SERVER_HOST ?? "127.0.0.1",
     port: process.env.FILE_SERVER_PORT
       ? parseInt(process.env.FILE_SERVER_PORT, 10)
       : 3457,
@@ -52,24 +59,39 @@ export const config = {
       ?? join(process.env.PI_CWD ?? homedir(), ".tui-session.lock"),
   },
   memory: {
-    enabled: process.env.MEMORY_ENABLED
-      ? process.env.MEMORY_ENABLED === "true"
-      : true,
     model: process.env.MEMORY_MODEL ?? "glm-4.7",
     provider: process.env.MEMORY_PROVIDER ?? "zai",
     sessionDir: process.env.MEMORY_SESSION_DIR ?? join(projectRoot, "sessions"),
-    outputDir: process.env.MEMORY_OUTPUT_DIR
-      ?? (process.env.PI_CWD ?? homedir()),
-    statePath: process.env.MEMORY_STATE_PATH
-      ?? join(process.env.PI_CWD ?? homedir(), ".memory-watcher-state.json"),
-    intervalMs: process.env.MEMORY_SCAN_INTERVAL_MS
-      ? parseInt(process.env.MEMORY_SCAN_INTERVAL_MS, 10)
-      : 10 * 60 * 1000, // 10 minutes default
-    activeWindowMs: process.env.MEMORY_ACTIVE_WINDOW_MINUTES
-      ? parseInt(process.env.MEMORY_ACTIVE_WINDOW_MINUTES, 10) * 60 * 1000
-      : 60 * 60 * 1000, // 60 minutes default
-    memoryPromptPath: process.env.MEMORY_PROMPT_PATH
-      ?? join(process.env.PI_CWD ?? homedir(), "prompts", "memory-prompt.md"),
+    dbPath: process.env.MEMORY_DB_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", "memory.sqlite"),
+    briefingPath: process.env.MEMORY_BRIEFING_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", "briefing.md"),
+    briefingMaxItems: process.env.MEMORY_BRIEFING_MAX_ITEMS
+      ? parseInt(process.env.MEMORY_BRIEFING_MAX_ITEMS, 10)
+      : 40,
+    embeddingHost: process.env.MEMORY_EMBEDDING_HOST
+      ?? "http://127.0.0.1:11434",
+    embeddingModel: process.env.MEMORY_EMBEDDING_MODEL ?? "qllama/bge-small-en-v1.5",
+    toolsExtensionPath: process.env.MEMORY_TOOLS_EXTENSION_PATH
+      ?? join(projectRoot, "gateway", "pi-extensions", "memory-tools.ts"),
+    dailyContextEnabled: process.env.DAILY_CONTEXT_ENABLED
+      ? process.env.DAILY_CONTEXT_ENABLED === "true"
+      : true,
+    todayPath: process.env.DAILY_CONTEXT_TODAY_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", "today.md"),
+    dailyArchiveDir: process.env.DAILY_CONTEXT_ARCHIVE_DIR
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", "daily"),
+    dailyContextStatePath: process.env.DAILY_CONTEXT_STATE_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", ".daily-context-state.json"),
+    dailyContextIntervalMs: process.env.DAILY_CONTEXT_INTERVAL_MS
+      ? parseInt(process.env.DAILY_CONTEXT_INTERVAL_MS, 10)
+      : 2 * 60 * 60 * 1000,
+    dailyExtractionHour: process.env.DAILY_MEMORY_EXTRACTION_HOUR
+      ? parseInt(process.env.DAILY_MEMORY_EXTRACTION_HOUR, 10)
+      : 22,
+    dailyContextMaxTranscriptChars: process.env.DAILY_CONTEXT_MAX_TRANSCRIPT_CHARS
+      ? parseInt(process.env.DAILY_CONTEXT_MAX_TRANSCRIPT_CHARS, 10)
+      : 50000,
   },
 };
 
@@ -79,5 +101,8 @@ export function validateConfig(): void {
   }
   if (!Number.isInteger(config.fileServer.port) || config.fileServer.port <= 0) {
     throw new Error("FILE_SERVER_PORT must be a positive integer");
+  }
+  if (!Number.isInteger(config.webSocket.port) || config.webSocket.port <= 0) {
+    throw new Error("GATEWAY_WS_PORT must be a positive integer");
   }
 }

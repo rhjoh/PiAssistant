@@ -1,6 +1,7 @@
 export interface FileServerStatus {
   websocket: {
     running: boolean;
+    host?: string;
     port: number;
     clientCount: number;
     clients: Array<{ id: string; type: string }>;
@@ -9,7 +10,10 @@ export interface FileServerStatus {
     lastRunAt: string | null;
     intervalMs: number;
   };
-  memoryWatcher: {
+  dailyContext?: {
+    lastRunAt: string | null;
+  };
+  memoryWatcher?: {
     lastRunAt: string | null;
     intervalMs: number;
     enabled: boolean;
@@ -25,5 +29,5 @@ export interface FileServerStatus {
 export interface StatusProvider {
   getStatus(): Promise<FileServerStatus> | FileServerStatus;
   recordHeartbeat(): void;
-  recordMemoryWatcherRun(): void;
+  recordDailyContextRun(): void;
 }

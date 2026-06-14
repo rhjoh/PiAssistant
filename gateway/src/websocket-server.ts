@@ -40,7 +40,8 @@ export class WebSocketGateway {
   constructor(
     private broadcastManager: BroadcastManager,
     private pi: PiRpcClient,
-    private port: number = 3456
+    private port: number = 3456,
+    private host: string = "127.0.0.1"
   ) {
     this.imageStorage = new ImageStorage(config.images.dir);
 
@@ -65,10 +66,9 @@ export class WebSocketGateway {
     await this.imageStorage.init();
 
     return new Promise((resolve, reject) => {
-      // Bind to localhost only for security
       this.wss = new WebSocketServer({
         port: this.port,
-        host: "127.0.0.1",
+        host: this.host,
         // Avoid Bun + ws permessage-deflate CPU spikes.
         perMessageDeflate: false,
       });
@@ -80,7 +80,7 @@ export class WebSocketGateway {
       });
 
       this.wss.on("listening", () => {
-        console.log(`[WebSocket] Server listening on ws://127.0.0.1:${this.port}`);
+        console.log(`[WebSocket] Server listening on ws://${this.host}:${this.port}`);
         resolve();
       });
 

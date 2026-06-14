@@ -37,7 +37,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   constructor(
     private sessionPath: string,
-    private cwd: string
+    private cwd: string,
+    private options: {
+      extensions?: string[];
+    } = {}
   ) {
     super();
   }
@@ -83,6 +86,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     // Let Pi restore model from session's model_change entry
     // We'll send set_model via RPC after Pi is ready if needed
     const args = ["--mode", "rpc", "--session", this.sessionPath];
+
+    for (const extension of this.options.extensions ?? []) {
+      args.push("-e", extension);
+    }
     
     // Add thinking level if specified (for models that support it)
     if (thinkingLevel && thinkingLevel !== "off") {

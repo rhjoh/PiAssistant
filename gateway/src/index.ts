@@ -12,10 +12,12 @@ import { TelegramClient } from "./telegram-client.js";
 import { BroadcastManager } from "./broadcast.js";
 import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
-import { MemoryWatcher } from "./memory-watcher.js";
 import { FileServer } from "./file-server.js";
 import { installTimestampedConsole } from "./logging.js";
 import { GatewayStatusProvider } from "./gateway-status.js";
+import { OllamaEmbeddingClient } from "./memory-embeddings.js";
+import { MemoryStore } from "./memory-store.js";
+import { DailyContextManager } from "./daily-context.js";
 
 export async function startGateway(): Promise<void> {
   installTimestampedConsole(config.runtime.logFile);
@@ -38,7 +40,30 @@ export async function startGateway(): Promise<void> {
   await mkdir(config.runtime.runDir, { recursive: true });
   await mkdir(config.runtime.logsDir, { recursive: true });
 
-  const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd);
+  const memoryStore = new MemoryStore({
+    dbPath: config.memory.dbPath,
+    briefingPath: config.memory.briefingPath,
+    embeddingClient: new OllamaEmbeddingClient({
+      host: config.memory.embeddingHost,
+      model: config.memory.embeddingModel,
+    }),
+  });
+  await memoryStore.init();
+  await memoryStore.writeBriefingFile({ maxItems: config.memory.briefingMaxItems });
+  console.log(`[Gateway] Memory DB: ${config.memory.dbPath}`);
+  console.log(`[Gateway] Memory briefing: ${config.memory.briefingPath}`);
+  console.log(`[Gateway] Memory embeddings: ${config.memory.embeddingHost} (${config.memory.embeddingModel})`);
+
+  const memoryExtensions = existsSync(config.memory.toolsExtensionPath)
+    ? [config.memory.toolsExtensionPath]
+    : [];
+  if (memoryExtensions.length === 0) {
+    console.warn(`[Gateway] Memory tools extension not found: ${config.memory.toolsExtensionPath}`);
+  }
+
+  const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd, {
+    extensions: memoryExtensions,
+  });
   const broadcastManager = new BroadcastManager(pi);
   const sessionManager = new SessionManager(pi, {
     sessionPath: config.pi.sessionPath,
@@ -53,18 +78,28 @@ export async function startGateway(): Promise<void> {
   const telegramClient = new TelegramClient(telegram);
   broadcastManager.registerClient(telegramClient);
 
-  const wsGateway = new WebSocketGateway(broadcastManager, pi, 3456);
-  const fileServer = new FileServer(config.fileServer.port, [config.images.dir], 3456);
+  const wsGateway = new WebSocketGateway(
+    broadcastManager,
+    pi,
+    config.webSocket.port,
+    config.webSocket.host
+  );
+  const fileServer = new FileServer(
+    config.fileServer.port,
+    [config.images.dir],
+    config.webSocket.port,
+    config.fileServer.host
+  );
+  fileServer.setMemoryStore(memoryStore);
 
   // Initialize status provider
   const statusProvider = new GatewayStatusProvider(
     broadcastManager,
     pi,
     config.pi.sessionPath,
-    3456,
-    config.heartbeat.intervalMs,
-    config.memory.intervalMs,
-    config.memory.enabled
+    config.webSocket.port,
+    config.webSocket.host,
+    config.heartbeat.intervalMs
   );
   fileServer.setStatusProvider(statusProvider);
 
@@ -161,29 +196,32 @@ export async function startGateway(): Promise<void> {
   );
   heartbeat.start();
 
-  const memoryWatcher = new MemoryWatcher({
+  const dailyContext = new DailyContextManager({
     sessionDir: config.memory.sessionDir,
-    outputDir: config.memory.outputDir,
-    statePath: config.memory.statePath,
-    model: config.memory.model,
+    statePath: config.memory.dailyContextStatePath,
+    todayPath: config.memory.todayPath,
+    dailyDir: config.memory.dailyArchiveDir,
+    intervalMs: config.memory.dailyContextIntervalMs,
+    dailyExtractionHour: config.memory.dailyExtractionHour,
     provider: config.memory.provider,
-    intervalMs: config.memory.intervalMs,
-    activeWindowMs: config.memory.activeWindowMs,
-    memoryPromptPath: config.memory.memoryPromptPath,
-    onTick: () => statusProvider.recordMemoryWatcherRun(),
-    // Don't spawn extraction while the main Pi session is processing a prompt
+    model: config.memory.model,
+    cwd: config.pi.cwd,
+    memoryStore,
+    briefingPath: config.memory.briefingPath,
+    maxTranscriptChars: config.memory.dailyContextMaxTranscriptChars,
+    onTick: () => statusProvider.recordDailyContextRun(),
     isBusy: () => pi.isPromptActive,
   });
 
-  telegram.onNewSession(async () => handleNew(sessionManager, config.pi.sessionPath, memoryWatcher));
+  telegram.onNewSession(async () => handleNew(sessionManager, config.pi.sessionPath));
 
-  if (config.memory.enabled) {
-    await memoryWatcher.start();
+  if (config.memory.dailyContextEnabled) {
+    await dailyContext.start();
     console.log(
-      `[Gateway] Memory watcher started (${config.memory.intervalMs / 60000} min interval, ${config.memory.provider}/${config.memory.model})`
+      `[Gateway] Daily context started (${config.memory.dailyContextIntervalMs / 60000} min interval, today=${config.memory.todayPath})`
     );
   } else {
-    console.log("[Gateway] Memory watcher disabled");
+    console.log("[Gateway] Daily context disabled");
   }
 
   console.log("[Gateway] Starting Telegram bot...");
@@ -197,11 +235,12 @@ export async function startGateway(): Promise<void> {
     shuttingDown = true;
     console.log("[Gateway] Shutting down...");
     heartbeat.stop();
-    memoryWatcher.stop();
+    dailyContext.stop();
     wsGateway.stop();
     fileServer.stop();
     telegram.stop();
     pi.stop();
+    memoryStore.close();
     process.exit(0);
   };
 
