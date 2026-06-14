@@ -16,7 +16,8 @@ Telegram + macOS app + Web UI + Pi TUI bridge
       - Broadcast manager
       - Telegram adapter
       - Session manager
-      - Memory watcher
+      - Memory store/API
+      - Daily context manager
       - Heartbeat
                     ↓
           Pi RPC session (main.jsonl)
@@ -52,7 +53,9 @@ Key modules:
 | `telegram.ts` | Telegram bot integration |
 | `telegram-client.ts` | Telegram adapter for broadcast layer |
 | `session-manager.ts` | `/new`, archive flow, compaction handling |
-| `memory-watcher.ts` | Background memory extraction |
+| `memory-store.ts` | SQLite-backed durable memory store and search |
+| `memory-embeddings.ts` | Ollama embedding client for vector search |
+| `daily-context.ts` | Rolling today context and daily extraction |
 | `heartbeat.ts` | Periodic internal prompts |
 | `file-server.ts` | Local file serving and status endpoint |
 | `gateway-status.ts` | Runtime status snapshot provider |
@@ -66,8 +69,9 @@ Startup flow:
 3. Start Pi RPC.
 4. Start WebSocket server on `127.0.0.1:3456`.
 5. Start file/status server on `127.0.0.1:3457`.
-6. Start heartbeat and memory watcher.
-7. Start Telegram bot.
+6. Initialize the memory store and generated briefing.
+7. Start heartbeat and daily context manager.
+8. Start Telegram bot.
 
 ### 2. Pi RPC
 
@@ -241,16 +245,46 @@ Runtime paths typically point to `~/assistant_main/sessions/main.jsonl` and `~/a
 
 ### 10. Memory System
 
+Current memory is gateway-owned and SQLite-backed. Pi accesses it through a Pi extension that calls the gateway file server API.
+
+Active modules:
+
+| File | Responsibility |
+|------|----------------|
+| `gateway/src/memory-store.ts` | SQLite schema, writes, FTS search, vector search, briefing generation |
+| `gateway/src/memory-embeddings.ts` | Ollama embedding client |
+| `gateway/src/daily-context.ts` | Periodic `today.md` rewrite and daily durable extraction |
+| `gateway/pi-extensions/memory-tools.ts` | Pi `memory_search` and `memory_write` tools |
+| `gateway/src/file-server.ts` | HTTP memory endpoints |
+
+Runtime paths:
+
+- Canonical DB: `~/assistant_main/memory/memory.sqlite`
+- Startup briefing: `~/assistant_main/memory/briefing.md`
+- Rolling current-day context: `~/assistant_main/memory/today.md`
+- Daily context archive: `~/assistant_main/memory/daily/YYYY-MM-DD.md`
+- Legacy markdown import/source: `~/assistant_main/memory.md`
+
+Retrieval combines SQLite FTS with sqlite-vec embeddings. Embeddings are generated through Ollama using `MEMORY_EMBEDDING_HOST` and `MEMORY_EMBEDDING_MODEL`.
+
+The gateway loads `gateway/pi-extensions/memory-tools.ts` into the main Pi RPC process. Those tools do not write markdown files directly; they call the file server endpoints:
+
+```text
+POST /memory/search
+POST /memory/write
+GET  /memory/briefing
+POST /memory/briefing
+```
+
+`daily-context.ts` runs extraction separately from the main Pi RPC session with `pi -p --no-session --no-tools`. It periodically rewrites `today.md` from recent transcript deltas. Once per day, it scans the day's context and writes durable memory candidates into SQLite through `MemoryStore`.
+
+`memory.md` is not the canonical writable store. It exists as legacy input/reference material and can be imported, but new writes should go through `memory_write` or `POST /memory/write`.
+
+#### Legacy Memory Watcher
+
 Location: `gateway/src/memory-watcher.ts`
 
-Current behavior:
-
-- watches session history on an interval
-- extracts memory artifacts with an LLM
-- writes memory outputs into the configured output directory, typically `~/assistant_main`
-- maintains watcher state in a sidecar state file
-
-The current repo code references `memory.md` directly. Older docs that mention additional prompt files in-repo are out of date unless those files exist in the configured runtime directory.
+The old watcher scanned session history on an interval, extracted memory artifacts with an LLM, wrote markdown outputs under `~/assistant_main`, and tracked offsets in a sidecar state file. It is preserved for reference only and is not wired into the current gateway startup path.
 
 ### 11. Heartbeat
 
@@ -265,24 +299,27 @@ Current behavior:
 
 Heartbeat-related rendering/filtering across clients is still an active bug-prone area, especially in the Web UI.
 
-### 12. CLI
+### 12. CLI (`personalos`)
 
 Entry points:
 
-- `gateway/bin/personalos.mjs`
+- `gateway/bin/personalos` (symlinked into project root)
 - `gateway/src/cli/index.ts`
 
-Capabilities:
+Commands:
 
-- `run`
-- `start`
-- `start --webui`
-- `stop`
-- `restart`
-- `status`
-- `logs`
+| Command | Description |
+|---------|-------------|
+| `personalos start` | Start the gateway as a background daemon |
+| `personalos start --webui` | Start gateway + Web UI dev server |
+| `personalos stop` | Stop the running gateway |
+| `personalos restart` | Stop then start |
+| `personalos status` | Runtime status snapshot (health, PID, uptime, model, session) |
+| `personalos session` | Session path, archive dir, compaction count, context window stats, cumulative tokens/cost |
+| `personalos session new` | Archive current session and start a fresh one (POST /session/new) |
+| `personalos logs` | Stream or dump gateway log output (`-f` to tail) |
 
-This is not packaged as a standalone binary yet, but it is already a real lifecycle manager for local use.
+All commands detect gateway health via the PID file (`~/assistant_main/run/personalos.pid`) and communicate through the file server (`:3457`) for status and session operations.
 
 ## Data Flows
 
