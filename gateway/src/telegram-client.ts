@@ -7,6 +7,23 @@ import { escapeHtml, markdownToTelegramHtml } from "./telegram.js";
 const TOOL_OUTPUT_MAX_CHARS = 1800;
 const TOOL_OUTPUT_MAX_LINES = 30;
 
+/** Rich-mode tool output truncation — richer messages can hold more. */
+const RICH_TOOL_OUTPUT_MAX_CHARS = 2000;
+
+interface ToolCallEntry {
+  label: string;
+  output: string;
+  running: boolean;
+  /** Legacy: Telegram message ID for separate tool message */
+  messageId: number | null;
+  pending: boolean;
+}
+
+/** Chronological event for interleaved rich message rendering. */
+type RichEvent =
+  | { type: "text"; content: string }
+  | { type: "tool"; id: string };
+
 /**
  * TelegramClient adapts TelegramBot to the Client interface for BroadcastManager.
  * 
@@ -16,8 +33,8 @@ const TOOL_OUTPUT_MAX_LINES = 30;
 export class TelegramClient implements Client {
   id = "telegram";
   type = "telegram" as const;
-  
-  // Track message IDs for editing streamed responses
+
+  // ── Legacy mode state ──────────────────────────────────────────
   private responseMessageId: number | null = null;
   private lastEditTime = 0;
   private lastEditedText = "";
@@ -29,8 +46,12 @@ export class TelegramClient implements Client {
   private readonly EDIT_THROTTLE_MS = 1000;
   private readonly DRAFT_START_MIN_CHARS = 24;
 
-  // Tool call tracking — map toolCallId → Telegram message ID
-  private toolMessages = new Map<string, { messageId: number | null; label: string; pending: boolean }>();
+  // Tool call tracking — map toolCallId → entry (shared by both modes)
+  private toolCalls = new Map<string, ToolCallEntry>();
+
+  // ── Rich mode state ────────────────────────────────────────────
+  private richMode = false;
+  private richEvents: RichEvent[] = []; // chronological interleaving
 
   constructor(private bot: TelegramBot) {}
 
@@ -44,12 +65,23 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
-    this.toolMessages.clear();
+    this.toolCalls.clear();
+    this.richEvents = [];
     this.draftId = this.bot.getMessageDraftId(ctx);
-    this.useDraftStreaming =
-      config.telegram.useMessageDraftStreaming &&
-      this.bot.canUseMessageDraft(ctx) &&
-      this.draftId !== null;
+
+    // Determine mode: rich messages if enabled and in a private chat
+    this.richMode = this.bot.canUseRichMessages(ctx);
+
+    if (this.richMode) {
+      // Rich mode: always use draft streaming via sendRichMessageDraft
+      this.useDraftStreaming = true;
+    } else {
+      this.useDraftStreaming =
+        config.telegram.useMessageDraftStreaming &&
+        this.bot.canUseMessageDraft(ctx) &&
+        this.draftId !== null;
+    }
+
     if (this.pendingEdit) {
       clearTimeout(this.pendingEdit);
       this.pendingEdit = null;
@@ -64,9 +96,11 @@ export class TelegramClient implements Client {
     this.responseMessageId = null;
     this.lastEditedText = "";
     this.accumulatedText = "";
-    this.toolMessages.clear();
+    this.toolCalls.clear();
+    this.richEvents = [];
     this.draftId = null;
     this.useDraftStreaming = false;
+    this.richMode = false;
     if (this.pendingEdit) {
       clearTimeout(this.pendingEdit);
       this.pendingEdit = null;
@@ -125,6 +159,19 @@ export class TelegramClient implements Client {
 
   private async handleTextDelta(ctx: Context, content: string): Promise<void> {
     this.accumulatedText += content;
+
+    if (this.richMode) {
+      const lastEvent = this.richEvents[this.richEvents.length - 1];
+      if (lastEvent && lastEvent.type === "text") {
+        lastEvent.content += content;
+      } else {
+        this.richEvents.push({ type: "text", content });
+      }
+      await this.flushRichDraft();
+      return;
+    }
+
+    // ── Legacy mode ──────────────────────────────────────────────
 
     const doEdit = async () => {
       const fullText = this.accumulatedText;
@@ -215,9 +262,17 @@ export class TelegramClient implements Client {
   // ── Tool call rendering ─────────────────────────────────────────
 
   private async handleToolStart(ctx: Context, toolCallId: string, toolName: string, label: string): Promise<void> {
-    const entry = { messageId: null as number | null, label, pending: true };
-    this.toolMessages.set(toolCallId, entry);
+    const entry: ToolCallEntry = { label, output: "", running: true, messageId: null, pending: true };
+    this.toolCalls.set(toolCallId, entry);
 
+    if (this.richMode) {
+      // Rich mode: record event for chronological interleaving
+      this.richEvents.push({ type: "tool", id: toolCallId });
+      await this.flushRichDraft();
+      return;
+    }
+
+    // ── Legacy mode: send separate tool message ──────────────────
     try {
       const html = `Running ${escapeHtml(label)}...`;
       const msg = await ctx.reply(html, { parse_mode: "HTML" });
@@ -230,8 +285,19 @@ export class TelegramClient implements Client {
   }
 
   private async handleToolOutput(ctx: Context, toolCallId: string, output: string, truncated?: boolean): Promise<void> {
-    const entry = this.toolMessages.get(toolCallId);
+    const entry = this.toolCalls.get(toolCallId);
     if (!entry) return;
+
+    entry.output = output;
+    entry.running = false;
+
+    if (this.richMode) {
+      // Rich mode: update the draft with tool output
+      await this.flushRichDraft();
+      return;
+    }
+
+    // ── Legacy mode: edit the separate tool message ──────────────
 
     // If the tool start message hasn't been sent yet, wait briefly
     if (!entry.messageId) {
@@ -269,6 +335,25 @@ export class TelegramClient implements Client {
 
     // Final authoritative text from BroadcastManager/Pi
     this.accumulatedText = finalText || this.accumulatedText;
+
+    if (this.richMode) {
+      // Rich mode: send the final rich message.
+      // If we were streaming via drafts, this creates the permanent message.
+      // If no draft was sent (short response), this sends it directly.
+      const markdown = this.buildRichDocument();
+      try {
+        await this.bot.sendRichMessage(ctx, markdown);
+      } catch (err) {
+        console.error("[TelegramClient] sendRichMessage failed:", err);
+        // Fallback to legacy send if rich fails for any reason
+        await this.fallbackSendLegacy(ctx);
+      }
+      this.clearContext();
+      return;
+    }
+
+    // ── Legacy mode ──────────────────────────────────────────────
+
     const text = this.accumulatedText;
 
     if (this.useDraftStreaming && this.responseMessageId === null && text) {
@@ -305,6 +390,115 @@ export class TelegramClient implements Client {
     }
 
     this.clearContext();
+  }
+
+  // ── Rich message helpers ────────────────────────────────────────
+
+  /**
+   * Build the current rich markdown document with chronologically interleaved
+   * text and tool calls (tool output appears where it ran, not at the bottom).
+   */
+  private buildRichDocument(): string {
+    const parts: string[] = [];
+    let hasContent = false;
+
+    for (const event of this.richEvents) {
+      if (event.type === "text") {
+        const trimmed = event.content.trimEnd();
+        if (trimmed) {
+          parts.push(trimmed);
+          hasContent = true;
+        }
+      } else {
+        const tc = this.toolCalls.get(event.id);
+        if (!tc) continue;
+        const safeLabel = tc.label.replace(/`/g, "\\`");
+        if (tc.running) {
+          parts.push(`### ${safeLabel} 🔄`);
+          parts.push("```");
+          parts.push("Running…");
+          parts.push("```");
+        } else {
+          const output = tc.output || "(no output)";
+          const truncated =
+            output.length > RICH_TOOL_OUTPUT_MAX_CHARS
+              ? output.slice(0, RICH_TOOL_OUTPUT_MAX_CHARS) + "\n… (truncated)"
+              : output;
+          parts.push(`### ${safeLabel}`);
+          parts.push("```");
+          parts.push(truncated);
+          parts.push("```");
+        }
+        hasContent = true;
+        parts.push("");
+      }
+    }
+
+    // Fallback: if no events yet but we have accumulated text
+    if (!hasContent && this.accumulatedText) {
+      parts.push(this.accumulatedText.trimEnd());
+    }
+
+    return parts.join("\n").trimEnd();
+  }
+
+  /**
+   * Flush the current state to the rich message draft, with throttling.
+   */
+  private async flushRichDraft(): Promise<void> {
+    if (!this.currentContext || this.draftId === null) return;
+
+    const doFlush = async () => {
+      if (!this.currentContext || this.draftId === null) return;
+      const markdown = this.buildRichDocument();
+      // Don't send empty or unchanged drafts
+      if (!markdown || markdown === this.lastEditedText) return;
+
+      try {
+        await this.bot.sendRichMessageDraft(this.currentContext, this.draftId, markdown);
+        this.lastEditedText = markdown;
+        this.lastEditTime = Date.now();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errObj = err as { parameters?: { retry_after?: number } };
+        if (errObj.parameters?.retry_after) {
+          const retryMs = errObj.parameters.retry_after * 1000 + 100;
+          setTimeout(doFlush, retryMs);
+          return;
+        }
+        console.error("[TelegramClient] sendRichMessageDraft failed:", errMsg);
+      }
+    };
+
+    // Throttle: don't flood the API with draft updates
+    if (this.pendingEdit) return;
+
+    const now = Date.now();
+    const timeSinceLastEdit = now - this.lastEditTime;
+
+    if (timeSinceLastEdit >= this.EDIT_THROTTLE_MS) {
+      await doFlush();
+    } else {
+      this.pendingEdit = setTimeout(() => {
+        this.pendingEdit = null;
+        void doFlush();
+      }, this.EDIT_THROTTLE_MS - timeSinceLastEdit);
+    }
+  }
+
+  /**
+   * Fallback: send the accumulated text using legacy HTML formatting.
+   * Used when sendRichMessage fails.
+   */
+  private async fallbackSendLegacy(ctx: Context): Promise<void> {
+    const text = this.accumulatedText;
+    if (!text) return;
+    const html = markdownToTelegramHtml(text);
+    try {
+      await this.bot.replyLong(ctx, html, "HTML");
+    } catch (err) {
+      console.error("[TelegramClient] Legacy fallback also failed:", err);
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────

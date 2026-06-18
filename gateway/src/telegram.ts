@@ -2,6 +2,42 @@ import type { Context } from "grammy";
 import { Bot } from "grammy";
 import { config } from "./config.js";
 
+// ── Rich Message API types (not yet in grammy — Bot API June 2026) ──
+
+interface RichMessagePayload {
+  markdown?: string;
+  html?: string;
+  is_rtl?: boolean;
+  skip_entity_detection?: boolean;
+}
+
+interface SendRichMessageArgs {
+  chat_id: number | string;
+  message_thread_id?: number;
+  rich_message: RichMessagePayload;
+  reply_parameters?: {
+    message_id: number;
+    chat_id?: number | string;
+    allow_sending_without_reply?: boolean;
+  };
+  disable_notification?: boolean;
+  protect_content?: boolean;
+  message_effect_id?: string;
+}
+
+interface SendRichMessageDraftArgs {
+  chat_id: number;
+  message_thread_id?: number;
+  draft_id: number;
+  rich_message: RichMessagePayload;
+}
+
+/** Raw API with rich message methods — cast ctx.api.raw to this type. */
+interface RichMessageRawApi {
+  sendRichMessage(args: SendRichMessageArgs): Promise<{ ok: boolean; result: unknown }>;
+  sendRichMessageDraft(args: SendRichMessageDraftArgs): Promise<{ ok: boolean; result: boolean }>;
+}
+
 /**
  * Escapes HTML special characters for safe use in Telegram HTML mode.
  */
@@ -446,6 +482,115 @@ export class TelegramBot {
     }
 
     await ctx.api.sendMessageDraft(chatId, draftId, text);
+  }
+
+  // ── Rich Messages (Bot API June 2026) ──────────────────────────
+
+  /** Whether rich messages can be used for this context. */
+  canUseRichMessages(ctx: Context): boolean {
+    if (!config.telegram.useRichMessages) return false;
+    // Rich messages require a private chat (chat_id is a positive number)
+    return ctx.chat?.type === "private" && typeof ctx.chat.id === "number" && ctx.chat.id > 0;
+  }
+
+  /** Get the raw API cast to the rich message interface. */
+  private getRichApi(ctx: Context): RichMessageRawApi {
+    return ctx.api.raw as unknown as RichMessageRawApi;
+  }
+
+  /**
+   * Send a rich message. Uses the new sendRichMessage Bot API method.
+   * Supports 32,768 chars, headings, tables, lists, code blocks, media, and more.
+   */
+  async sendRichMessage(ctx: Context, markdown: string): Promise<unknown> {
+    const api = this.getRichApi(ctx);
+    const replyTo = ctx.message?.message_id;
+    return api.sendRichMessage({
+      chat_id: ctx.chat!.id,
+      rich_message: { markdown },
+      ...(replyTo ? {
+        reply_parameters: { message_id: replyTo, allow_sending_without_reply: true },
+      } : {}),
+    });
+  }
+
+  /**
+   * Stream/update a rich message draft. Takes the same draft_id pattern as
+   * sendMessageDraft but sends InputRichMessage content.
+   * The draft is ephemeral (30s preview); finalize with sendRichMessage.
+   */
+  async sendRichMessageDraft(
+    ctx: Context,
+    draftId: number,
+    markdown: string,
+  ): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (typeof chatId !== "number") {
+      throw new Error("Private chat required for sendRichMessageDraft");
+    }
+    const api = this.getRichApi(ctx);
+    await api.sendRichMessageDraft({
+      chat_id: chatId,
+      draft_id: draftId,
+      rich_message: { markdown },
+    });
+  }
+
+  /**
+   * Build a rich message markdown document from assistant text and tool calls.
+   * Tool calls are placed in a "## 🔧 Tool Calls" section at the bottom.
+   * The assistant text is passed through as-is (rich markdown is a superset of
+   * standard markdown — headings, lists, tables, code blocks all render natively).
+   */
+  buildRichMessageMarkdown(
+    assistantText: string,
+    toolCalls: Array<{ label: string; output: string; running: boolean }>,
+  ): string {
+    const parts: string[] = [];
+
+    // Assistant response text (preserve original markdown formatting)
+    if (assistantText) {
+      parts.push(assistantText.trimEnd());
+    } else if (toolCalls.length > 0) {
+      parts.push("⏳ *Generating response…*");
+    }
+
+    // Tool calls section
+    if (toolCalls.length > 0) {
+      parts.push("");
+      parts.push("## 🔧 Tool Calls");
+      parts.push("");
+
+      for (const tc of toolCalls) {
+        // Escape backticks in label to avoid breaking the heading
+        const safeLabel = tc.label.replace(/`/g, "\\`");
+        if (tc.running) {
+          parts.push(`### ${safeLabel} 🔄`);
+          parts.push("```");
+          parts.push("Running…");
+          parts.push("```");
+        } else if (tc.output) {
+          // Truncate very long outputs
+          const maxLen = 2000;
+          const truncated =
+            tc.output.length > maxLen
+              ? tc.output.slice(0, maxLen) + "\n… (truncated)"
+              : tc.output;
+          parts.push(`### ${safeLabel}`);
+          parts.push("```");
+          parts.push(truncated);
+          parts.push("```");
+        } else {
+          parts.push(`### ${safeLabel}`);
+          parts.push("```");
+          parts.push("(no output)");
+          parts.push("```");
+        }
+        parts.push("");
+      }
+    }
+
+    return parts.join("\n").trimEnd();
   }
 
   /**
