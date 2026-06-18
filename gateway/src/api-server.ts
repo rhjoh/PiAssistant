@@ -3,8 +3,9 @@ import { createReadStream, existsSync, realpathSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { lookup } from "mime-types";
 import type { StatusProvider } from "./status-types.js";
-import type { MemoryStore, SearchMemoryInput, WriteMemoryInput } from "./memory-store.js";
+import type { MemoryScope, MemoryStore, SearchMemoryInput, WriteMemoryInput } from "./memory-store.js";
 import type { SessionManager } from "./session-manager.js";
+import type { DailyContextManager } from "./daily-context.js";
 import type { CreateTaskInput, TaskStore, UpdateTaskInput } from "./task-store.js";
 import type { TaskScheduler } from "./task-scheduler.js";
 
@@ -19,6 +20,7 @@ export class ApiServer {
   private sessionManager: SessionManager | null = null;
   private taskStore: TaskStore | null = null;
   private taskScheduler: TaskScheduler | null = null;
+  private dailyContext: DailyContextManager | null = null;
 
   constructor(
     private port: number = 3457,
@@ -44,6 +46,10 @@ export class ApiServer {
   setTaskServices(taskStore: TaskStore, taskScheduler: TaskScheduler): void {
     this.taskStore = taskStore;
     this.taskScheduler = taskScheduler;
+  }
+
+  setDailyContext(dailyContext: DailyContextManager): void {
+    this.dailyContext = dailyContext;
   }
 
   start(): Promise<void> {
@@ -226,6 +232,64 @@ export class ApiServer {
           maxItems: body.maxItems,
         });
         this.sendJson(res, 200, { briefing });
+        return;
+      }
+
+      if (path === "/memory/update" && req.method === "POST") {
+        const body = await readJsonBody<{ id: number; content?: string; kind?: string; scope?: string; importance?: number; project?: string | null }>(req);
+        if (body.id === undefined || body.id === null) {
+          this.sendJson(res, 400, { error: "id is required" });
+          return;
+        }
+        const memory = this.memoryStore.updateMemory(body.id, {
+          content: body.content,
+          kind: body.kind,
+          scope: body.scope as MemoryScope | undefined,
+          importance: body.importance,
+          project: body.project,
+        });
+        await this.memoryStore.writeBriefingFile();
+        this.sendJson(res, 200, { memory });
+        return;
+      }
+
+      if (path === "/memory/archive" && req.method === "POST") {
+        const body = await readJsonBody<{ ids: number[] }>(req);
+        if (!Array.isArray(body.ids) || body.ids.length === 0) {
+          this.sendJson(res, 400, { error: "ids array is required" });
+          return;
+        }
+        const archived = this.memoryStore.archiveMemories(body.ids);
+        await this.memoryStore.writeBriefingFile();
+        this.sendJson(res, 200, { archived });
+        return;
+      }
+
+      if (path === "/memory/get" && req.method === "GET") {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        const idParam = url.searchParams.get("id");
+        if (!idParam) {
+          this.sendJson(res, 400, { error: "id query parameter is required" });
+          return;
+        }
+        const id = parseInt(idParam, 10);
+        if (isNaN(id)) {
+          this.sendJson(res, 400, { error: "id must be a number" });
+          return;
+        }
+        const memory = this.memoryStore.getMemory(id);
+        this.sendJson(res, 200, { memory });
+        return;
+      }
+
+      if (path === "/memory/extract" && req.method === "POST") {
+        if (!this.dailyContext) {
+          this.sendJson(res, 503, { error: "Daily context manager not available" });
+          return;
+        }
+        const body = await readJsonBody<{ forceExtraction?: boolean }>(req);
+        const result = await this.dailyContext.triggerNow(body?.forceExtraction === true);
+        this.sendJson(res, 200, result);
         return;
       }
 

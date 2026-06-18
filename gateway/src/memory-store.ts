@@ -225,49 +225,52 @@ export class MemoryStore {
   }
 
   buildBriefing(options: { project?: string; maxItems?: number } = {}): string {
-    const maxItems = Math.max(5, Math.min(options.maxItems ?? 40, 100));
+    const maxItems = Math.max(20, Math.min(options.maxItems ?? 80, 200));
     const project = cleanOptional(options.project);
-    const selected = new Map<number, MemoryRecord>();
 
-    const addRows = (rows: DbMemoryRow[]) => {
-      for (const row of rows) {
-        if (selected.size >= maxItems) break;
-        selected.set(row.id, mapMemoryRow(row));
-      }
-    };
-
-    addRows(this.queryRows(`
-      SELECT * FROM memories
-      WHERE archived = 0 AND scope = 'user'
-      ORDER BY importance DESC, updated_at DESC
-      LIMIT ?
-    `, [Math.ceil(maxItems * 0.35)]));
-
-    if (project) {
-      addRows(this.queryRows(`
-        SELECT * FROM memories
-        WHERE archived = 0 AND (project = ? OR scope = 'project')
-        ORDER BY importance DESC, updated_at DESC
-        LIMIT ?
-      `, [project, Math.ceil(maxItems * 0.25)]));
-    }
-
-    addRows(this.queryRows(`
+    // Primary query: all memories sorted by importance then recency.
+    // Replaces the old percentage-quota system which allocated fixed
+    // proportions per scope and ended up missing entire categories of
+    // high-importance memories (e.g. only 35% of slots to user scope
+    // when 97% of important memories are user scope).
+    const records = this.queryRows(`
       SELECT * FROM memories
       WHERE archived = 0
-      ORDER BY updated_at DESC
+      ORDER BY importance DESC, updated_at DESC
       LIMIT ?
-    `, [Math.ceil(maxItems * 0.25)]));
+    `, [maxItems]).map(mapMemoryRow);
 
-    addRows(this.queryRows(`
-      SELECT * FROM memories
-      WHERE archived = 0 AND access_count > 0
-      ORDER BY access_count DESC, last_seen_at DESC
-      LIMIT ?
-    `, [Math.ceil(maxItems * 0.15)]));
+    // Kind diversity pass: ensure each kind with importance >= 3 has
+    // at least one representative in the briefing. Prevents cases where
+    // e.g. all "preference" memories fill the slots and "event" or
+    // "fact" memories are completely absent.
+    const selected = new Map<number, MemoryRecord>();
+    for (const record of records) {
+      selected.set(record.id, record);
+    }
 
-    const records = Array.from(selected.values()).slice(0, maxItems);
-    const byScope = groupBy(records, (record) => record.scope);
+    const coveredKinds = new Set(records.map((r) => r.kind));
+    if (coveredKinds.size > 0 && selected.size < maxItems) {
+      const kindArray = Array.from(coveredKinds);
+      const placeholders = kindArray.map(() => "?").join(",");
+      const diversityRows = this.queryRows(`
+        SELECT * FROM memories
+        WHERE archived = 0 AND importance >= 3 AND kind NOT IN (${placeholders})
+        GROUP BY kind
+        ORDER BY importance DESC, updated_at DESC
+      `, kindArray);
+
+      for (const row of diversityRows) {
+        if (selected.size >= maxItems) break;
+        if (!selected.has(row.id)) {
+          selected.set(row.id, mapMemoryRow(row));
+        }
+      }
+    }
+
+    const finalRecords = Array.from(selected.values());
+    finalRecords.sort((a, b) => b.importance - a.importance || b.updatedAt.localeCompare(a.updatedAt));
+    const byScope = groupBy(finalRecords, (record) => record.scope);
 
     const lines = [
       "# Memory Briefing",
@@ -477,7 +480,7 @@ export class MemoryStore {
     return Boolean(row);
   }
 
-  private getMemory(id: number): MemoryRecord {
+  getMemory(id: number): MemoryRecord {
     const memory = this.getMemoryOrNull(id);
     if (!memory) throw new Error(`Memory ${id} not found`);
     return memory;
@@ -488,6 +491,79 @@ export class MemoryStore {
       .prepare("SELECT * FROM memories WHERE id = ? AND archived = 0")
       .get(id) as DbMemoryRow | undefined;
     return row ? mapMemoryRow(row) : null;
+  }
+
+  updateMemory(id: number, updates: Partial<Pick<MemoryRecord, "content" | "kind" | "scope" | "importance" | "project">>): MemoryRecord {
+    const db = this.requireDb();
+    const existing = this.getMemoryOrNull(id);
+    if (!existing) throw new Error(`Memory ${id} not found or archived`);
+
+    const now = new Date().toISOString();
+    const fields: string[] = ["updated_at = ?"];
+    const values: unknown[] = [now];
+
+    if (updates.content !== undefined) {
+      const content = updates.content.trim();
+      if (!content) throw new Error("content cannot be empty");
+      fields.push("content = ?");
+      values.push(content);
+    }
+    if (updates.kind !== undefined) {
+      fields.push("kind = ?");
+      values.push(normalizeLabel(updates.kind, existing.kind));
+    }
+    if (updates.scope !== undefined) {
+      fields.push("scope = ?");
+      values.push(normalizeScope(updates.scope));
+    }
+    if (updates.importance !== undefined) {
+      fields.push("importance = ?");
+      values.push(clampImportance(updates.importance));
+    }
+    if (updates.project !== undefined) {
+      fields.push("project = ?");
+      values.push(cleanOptional(updates.project));
+    }
+
+    values.push(id);
+    db.prepare(`UPDATE memories SET ${fields.join(", ")} WHERE id = ? AND archived = 0`).run(...values);
+
+    // Re-index FTS if content changed
+    if (updates.content !== undefined) {
+      db.prepare("DELETE FROM memory_vec WHERE rowid = ?").run(BigInt(id));
+      // Re-embed asynchronously is fine — the FTS trigger already updated.
+      // Embedding will be backfilled on next search or backfill pass.
+      db.prepare(`UPDATE memories SET embedding_status = 'pending' WHERE id = ?`).run(id);
+    }
+
+    return this.getMemory(id);
+  }
+
+  archiveMemory(id: number): MemoryRecord {
+    const db = this.requireDb();
+    const existing = this.getMemoryOrNull(id);
+    if (!existing) throw new Error(`Memory ${id} not found or already archived`);
+
+    const now = new Date().toISOString();
+    db.prepare("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now, id);
+    db.prepare("DELETE FROM memory_vec WHERE rowid = ?").run(BigInt(id));
+
+    // Return the archived record (re-fetch without archived filter)
+    const row = db.prepare("SELECT * FROM memories WHERE id = ?").get(id) as DbMemoryRow;
+    return mapMemoryRow(row);
+  }
+
+  archiveMemories(ids: number[]): number[] {
+    const archived: number[] = [];
+    for (const id of ids) {
+      try {
+        this.archiveMemory(id);
+        archived.push(id);
+      } catch {
+        // Skip not-found or already-archived
+      }
+    }
+    return archived;
   }
 
   private queryRows(sql: string, params: unknown[] = []): DbMemoryRow[] {
@@ -539,7 +615,7 @@ function normalizeLabel(value: string | undefined, fallback: string): string {
   return cleaned || fallback;
 }
 
-function normalizeScope(value: MemoryScope | undefined): MemoryScope {
+function normalizeScope(value: string | undefined): MemoryScope {
   if (value === "user" || value === "project" || value === "daily" || value === "session") {
     return value;
   }

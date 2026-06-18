@@ -181,14 +181,134 @@ export default function registerMemoryTools(pi: ExtensionAPI) {
       };
     },
   });
+
+  pi.registerTool({
+    name: "memory_update",
+    label: "Memory Update",
+    description:
+      "Update an existing memory by ID. Use when a fact has changed (e.g. rent amount, " +
+      "job status) and the old memory is now incorrect. Optionally archive the old memory " +
+      "by combining update + archive in sequence.",
+    promptSnippet: "Update an existing memory in Gateway SQLite",
+    promptGuidelines: [
+      "Use memory_update when a previous memory is now factually wrong or outdated.",
+      "Use memory_archive to remove a memory entirely that is no longer relevant.",
+    ],
+    parameters: Type.Object({
+      id: Type.Number({
+        description: "The ID of the memory to update.",
+      }),
+      content: Type.Optional(
+        Type.String({
+          description: "New content for the memory. Include enough context to stand alone.",
+        }),
+      ),
+      kind: Type.Optional(
+        Type.String({
+          description: "New kind value.",
+        }),
+      ),
+      scope: Type.Optional(
+        Type.String({
+          description: "New scope: user, project, daily, session.",
+        }),
+      ),
+      importance: Type.Optional(
+        Type.Number({
+          description: "New importance from 1-5.",
+        }),
+      ),
+      project: Type.Optional(
+        Type.String({
+          description: "New project name, or null to clear.",
+        }),
+      ),
+    }),
+
+    async execute(_toolCallId, params: { id: number; content?: string; kind?: string; scope?: string; importance?: number; project?: string | null }) {
+      if (params.id === undefined || params.id === null) {
+        return {
+          content: [{ type: "text", text: "'id' is required." }],
+          isError: true,
+        };
+      }
+
+      const response = await gatewayJson<{ memory: Record<string, unknown> }>("/memory/update", {
+        id: params.id,
+        content: params.content,
+        kind: params.kind,
+        scope: params.scope,
+        importance: params.importance,
+        project: params.project,
+      });
+
+      const memory = response.memory;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Updated memory #${String(memory.id)}: "${String(memory.content).slice(0, 80)}..." (importance=${String(memory.importance)}, kind=${String(memory.kind)})`,
+          },
+        ],
+        details: response,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "memory_archive",
+    label: "Memory Archive",
+    description:
+      "Archive one or more memories by ID. Archived memories are hidden from search " +
+      "and briefings but preserved in the database. Use when a memory is no longer " +
+      "relevant (e.g. completed tasks, resolved issues, superseded facts).",
+    promptSnippet: "Archive memories that are no longer relevant",
+    promptGuidelines: [
+      "Archive memories that have been superseded by new information.",
+      "Archive completed tasks or resolved issues that are no longer actionable.",
+      "Use memory_search first to find the IDs, then memory_archive to remove them.",
+    ],
+    parameters: Type.Object({
+      ids: Type.Array(Type.Number(), {
+        description: "Array of memory IDs to archive.",
+      }),
+    }),
+
+    async execute(_toolCallId, params: { ids: number[] }) {
+      if (!Array.isArray(params.ids) || params.ids.length === 0) {
+        return {
+          content: [{ type: "text", text: "'ids' must be a non-empty array of memory IDs." }],
+          isError: true,
+        };
+      }
+
+      const response = await gatewayJson<{ archived: number[] }>("/memory/archive", {
+        ids: params.ids,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Archived ${String(response.archived.length)} memory/memories: ${response.archived.join(", ")}`,
+          },
+        ],
+        details: response,
+      };
+    },
+  });
 }
 
-async function gatewayJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${GATEWAY_MEMORY_BASE_URL}${path}`, {
-    method: "POST",
+async function gatewayJson<T>(path: string, body: unknown, method: "POST" | "GET" = "POST"): Promise<T> {
+  const init: RequestInit = {
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  };
+  if (method === "POST") {
+    init.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(`${GATEWAY_MEMORY_BASE_URL}${path}`, init);
 
   const text = await response.text();
   let parsed: unknown;

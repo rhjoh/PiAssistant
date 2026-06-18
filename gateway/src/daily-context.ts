@@ -28,10 +28,20 @@ type SessionEntry = {
 
 type ExtractedMemoryCandidate = WriteMemoryInput & {
   confidence?: number;
+  archivePatterns?: string[];
 };
 
 type DailyExtractionOutput = {
   memories?: ExtractedMemoryCandidate[];
+};
+
+export type DailyContextTriggerResult = {
+  updatedToday: boolean;
+  entriesProcessed: number;
+  extractionRan: boolean;
+  memoriesSaved: number;
+  skippedReason?: "already_running" | "main_session_busy" | "already_extracted_today" | "before_extraction_hour" | "no_entries";
+  date: string;
 };
 
 export type DailyContextOptions = {
@@ -55,15 +65,15 @@ export class DailyContextManager {
   private timer: NodeJS.Timeout | null = null;
   private state: DailyContextState = { offsets: {} };
   private running = false;
+  private initialized = false;
 
   constructor(private options: DailyContextOptions) {}
 
   async start(): Promise<void> {
-    await this.loadState();
-    await this.ensureFiles();
-    void this.tick("startup");
+    await this.initialize();
+    void this.tick("startup", false);
     this.timer = setInterval(() => {
-      void this.tick("interval");
+      void this.tick("interval", false);
     }, this.options.intervalMs);
   }
 
@@ -74,40 +84,89 @@ export class DailyContextManager {
     }
   }
 
-  private async tick(reason: "startup" | "interval"): Promise<void> {
+  /**
+   * Manually trigger a daily context tick (today.md refresh and optional extraction).
+   * Returns a summary of what happened.
+   */
+  async triggerNow(forceExtraction = false): Promise<DailyContextTriggerResult> {
+    await this.initialize();
+    return this.tick("interval", forceExtraction, true);
+  }
+
+  private async tick(reason: "startup" | "interval", forceExtraction = false, throwOnError = false): Promise<DailyContextTriggerResult> {
+    const date = formatDateKey(new Date());
     if (this.running) {
       console.log("[DailyContext] Tick skipped — previous tick still running");
-      return;
+      return {
+        updatedToday: false,
+        entriesProcessed: 0,
+        extractionRan: false,
+        memoriesSaved: 0,
+        skippedReason: "already_running",
+        date,
+      };
     }
 
     if (this.options.isBusy?.()) {
       console.log("[DailyContext] Tick skipped — main session is busy");
-      return;
+      return {
+        updatedToday: false,
+        entriesProcessed: 0,
+        extractionRan: false,
+        memoriesSaved: 0,
+        skippedReason: "main_session_busy",
+        date,
+      };
     }
 
     this.running = true;
     this.options.onTick?.();
     const started = Date.now();
     console.log(`[DailyContext] Tick started (${reason})`);
+    let result: DailyContextTriggerResult = {
+      updatedToday: false,
+      entriesProcessed: 0,
+      extractionRan: false,
+      memoriesSaved: 0,
+      date,
+    };
 
     try {
       await this.rollTodayIfNeeded();
       const entries = await this.collectNewEntries();
       if (entries.length > 0) {
         await this.updateToday(entries);
+        result.updatedToday = true;
+        result.entriesProcessed = entries.length;
       } else {
         console.log("[DailyContext] No new entries for today.md");
       }
 
-      await this.maybeRunDailyExtraction();
+      const extraction = await this.maybeRunDailyExtraction(forceExtraction);
+      result = {
+        ...result,
+        extractionRan: extraction.ran,
+        memoriesSaved: extraction.memoriesSaved,
+        skippedReason: extraction.skippedReason,
+      };
       await this.saveState();
     } catch (error) {
       console.error("[DailyContext] Error:", error);
+      if (throwOnError) throw error;
     } finally {
       this.running = false;
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       console.log(`[DailyContext] Tick finished — ${elapsed}s`);
     }
+
+    return result;
+  }
+
+  private async initialize(): Promise<void> {
+    if (this.initialized) return;
+    await this.loadState();
+    await this.ensureFiles();
+    this.initialized = true;
   }
 
   private async ensureFiles(): Promise<void> {
@@ -240,16 +299,20 @@ export class DailyContextManager {
     console.log(`[DailyContext] Updated ${this.options.todayPath} from ${entries.length} entries`);
   }
 
-  private async maybeRunDailyExtraction(): Promise<void> {
+  private async maybeRunDailyExtraction(force = false): Promise<{ ran: boolean; memoriesSaved: number; skippedReason?: DailyContextTriggerResult["skippedReason"] }> {
     const now = new Date();
     const dateKey = formatDateKey(now);
-    if (this.state.lastDailyExtractionDate === dateKey) return;
-    if (now.getHours() < this.options.dailyExtractionHour) return;
+    if (!force && this.state.lastDailyExtractionDate === dateKey) {
+      return { ran: false, memoriesSaved: 0, skippedReason: "already_extracted_today" };
+    }
+    if (!force && now.getHours() < this.options.dailyExtractionHour) {
+      return { ran: false, memoriesSaved: 0, skippedReason: "before_extraction_hour" };
+    }
 
     const entries = await this.collectEntriesForDate(dateKey);
     if (entries.length === 0) {
       this.state.lastDailyExtractionDate = dateKey;
-      return;
+      return { ran: false, memoriesSaved: 0, skippedReason: "no_entries" };
     }
 
     const today = await readFileIfExists(this.options.todayPath);
@@ -262,7 +325,13 @@ export class DailyContextManager {
       "Return ONLY valid JSON. Do not wrap in code fences.",
       "",
       "Schema:",
-      '{ "memories": [ { "content": string, "kind": string, "scope": "user" | "project" | "daily" | "session", "importance": number, "project"?: string } ] }',
+      '{ "memories": [ { "content": string, "kind": string, "scope": "user" | "project" | "daily" | "session", "importance": number, "project"?: string, "archivePatterns"?: string[] } ] }',
+      "",
+      "The `archivePatterns` field is optional. Use it to list substrings or patterns",
+      "that identify existing memories which this new memory supersedes or contradicts.",
+      "For example, if a new memory says 'The user now prefers Neovim'",
+      "and the existing briefing says 'The user prefers VS Code', include 'prefers VS Code'",
+      "in archivePatterns. The system will archive matching memories automatically.",
       "",
       "What to save:",
       "- Stable user preferences, facts, goals, constraints.",
@@ -274,6 +343,11 @@ export class DailyContextManager {
       "- Routine chatter, temporary debugging noise, raw tool output.",
       "- Assistant reasoning or internal thoughts.",
       "- Duplicates of the existing briefing.",
+      "",
+      "When a new fact contradicts or supersedes an existing one, DO include the new",
+      "fact AND set archivePatterns to identify the old fact. For example:",
+      '- New: "The deployment target is now production"',
+      '- archivePatterns: ["deployment target is staging"]',
       "",
       "Importance:",
       "- 5: must appear in startup context.",
@@ -314,12 +388,37 @@ export class DailyContextManager {
         sourceId: dateKey,
       });
       saved++;
+
+      // Archive memories that this new one supersedes
+      if (memory.archivePatterns && memory.archivePatterns.length > 0) {
+        await this.archiveSupersededMemories(memory.archivePatterns);
+      }
     }
 
     await this.options.memoryStore.writeBriefingFile();
     await this.archiveToday(dateKey);
     this.state.lastDailyExtractionDate = dateKey;
     console.log(`[DailyContext] Daily extraction complete for ${dateKey}: saved ${saved} memories`);
+    return { ran: true, memoriesSaved: saved };
+  }
+
+  private async archiveSupersededMemories(patterns: string[]): Promise<void> {
+    if (!patterns.length) return;
+    for (const pattern of patterns) {
+      const results = await this.options.memoryStore.searchMemory({
+        query: pattern,
+        limit: 5,
+        scope: "user",
+      });
+      for (const result of results) {
+        // Check if the pattern is a meaningful substring of the memory content
+        // to avoid false positives from vague patterns
+        if (result.content.toLowerCase().includes(pattern.toLowerCase())) {
+          this.options.memoryStore.archiveMemory(result.id);
+          console.log(`[DailyContext] Archived superseded memory ${result.id}: "${result.content.slice(0, 80)}..." (matched pattern: "${pattern}")`);
+        }
+      }
+    }
   }
 
   private async collectEntriesForDate(dateKey: string): Promise<SessionEntry[]> {
