@@ -15,12 +15,15 @@ export const config = {
       ? parseInt(process.env.TELEGRAM_ALLOWED_USER_ID, 10)
       : null,
     useMessageDraftStreaming: process.env.TELEGRAM_USE_MESSAGE_DRAFT_STREAMING === "true",
+    useRichMessages: process.env.TELEGRAM_USE_RICH_MESSAGES !== "false", // default true
   },
   pi: {
     sessionPath:
       process.env.PI_SESSION_PATH ??
       join(homedir(), ".pi", "agent", "sessions", "main.jsonl"),
     cwd: process.env.PI_CWD ?? homedir(),
+    provider: process.env.PI_PROVIDER?.trim() || undefined,
+    model: process.env.PI_MODEL?.trim() || undefined,
     thinkingLevel: process.env.PI_THINKING_LEVEL ?? "off",
   },
   images: {
@@ -82,9 +85,11 @@ export const config = {
       ?? join(process.env.PI_CWD ?? homedir(), "memory", "memory.sqlite"),
     briefingPath: process.env.MEMORY_BRIEFING_PATH
       ?? join(process.env.PI_CWD ?? homedir(), "memory", "briefing.md"),
+    userProfilePath: process.env.MEMORY_USER_PROFILE_PATH
+      ?? join(process.env.PI_CWD ?? homedir(), "memory", "user.md"),
     briefingMaxItems: process.env.MEMORY_BRIEFING_MAX_ITEMS
       ? parseInt(process.env.MEMORY_BRIEFING_MAX_ITEMS, 10)
-      : 40,
+      : 80,
     embeddingHost: process.env.MEMORY_EMBEDDING_HOST
       ?? "http://127.0.0.1:11434",
     embeddingModel: process.env.MEMORY_EMBEDDING_MODEL ?? "qllama/bge-small-en-v1.5",

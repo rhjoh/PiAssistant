@@ -1,4 +1,5 @@
-import { spawn, ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 /**
@@ -34,12 +35,15 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private pendingPromptCleanup: (() => void) | null = null;
   /** Inactivity timeout handle for the currently active prompt (resets on each Pi event). */
   private promptInactivityTimer: NodeJS.Timeout | null = null;
+  private startupExitHandler: (() => void) | null = null;
 
   constructor(
     private sessionPath: string,
     private cwd: string,
     private options: {
       extensions?: string[];
+      provider?: string;
+      model?: string;
     } = {}
   ) {
     super();
@@ -82,19 +86,49 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       return;
     }
 
-    // IMPORTANT: Don't pass --provider/--model to Pi
-    // Let Pi restore model from session's model_change entry
-    // We'll send set_model via RPC after Pi is ready if needed
+    const startWithConfiguredModel = Boolean(this.options.model);
+    let started = await this.startProcess(thinkingLevel, startWithConfiguredModel);
+    if (!started && startWithConfiguredModel) {
+      const configured = this.options.provider
+        ? `${this.options.provider}/${this.options.model}`
+        : this.options.model;
+      console.warn(
+        `[PiRpc] Failed to start with configured model ${configured}; falling back to Pi session default`
+      );
+      started = await this.startProcess(thinkingLevel, false);
+    }
+
+    if (!started) {
+      throw new Error("Pi RPC exited during startup");
+    }
+
+    this.emit("ready");
+  }
+
+  private buildArgs(thinkingLevel: string | undefined, includeConfiguredModel: boolean): string[] {
     const args = ["--mode", "rpc", "--session", this.sessionPath];
+
+    if (includeConfiguredModel && this.options.model) {
+      if (this.options.provider) {
+        args.push("--provider", this.options.provider);
+      }
+      args.push("--model", this.options.model);
+    }
 
     for (const extension of this.options.extensions ?? []) {
       args.push("-e", extension);
     }
-    
+
     // Add thinking level if specified (for models that support it)
     if (thinkingLevel && thinkingLevel !== "off") {
       args.push("--thinking", thinkingLevel);
     }
+
+    return args;
+  }
+
+  private async startProcess(thinkingLevel: string | undefined, includeConfiguredModel: boolean): Promise<boolean> {
+    const args = this.buildArgs(thinkingLevel, includeConfiguredModel);
 
     this.process = spawn("pi", args, {
       cwd: this.cwd,
@@ -115,6 +149,12 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     this.process.on("exit", (code) => {
       this.process = null;
       this.bufferCleanup = null;
+      if (this.startupExitHandler) {
+        const handler = this.startupExitHandler;
+        this.startupExitHandler = null;
+        handler();
+        return;
+      }
       // 🛡️ FIX 1: Clean up active prompt state so isPromptActive doesn't get stuck forever
       if (this.activePromptSource !== null) {
         console.warn(
@@ -138,9 +178,26 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.emit("error", err);
     });
 
-    // Give Pi a moment to initialize
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    this.emit("ready");
+    return this.waitForProcessToSurviveStartup();
+  }
+
+  private waitForProcessToSurviveStartup(): Promise<boolean> {
+    const startupGraceMs = 500;
+
+    return new Promise<boolean>((resolve) => {
+      const markStarted = () => {
+        this.startupExitHandler = null;
+        resolve(this.isRunning);
+      };
+
+      const markFailed = () => { // This is called by the handler() func on "exit" events.
+        clearTimeout(startupTimer);
+        resolve(false);
+      };
+
+      const startupTimer = setTimeout(markStarted, startupGraceMs);
+      this.startupExitHandler = markFailed;
+    });
   }
 
   stop(): void {

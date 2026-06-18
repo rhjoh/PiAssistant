@@ -30,6 +30,12 @@ export async function startGateway(): Promise<void> {
 
   console.log("[Gateway] Starting Personal OS Gateway...");
   console.log(`[Gateway] Pi session: ${config.pi.sessionPath}`);
+  if (config.pi.model) {
+    const configuredModel = config.pi.provider ? `${config.pi.provider}/${config.pi.model}` : config.pi.model;
+    console.log(`[Gateway] Pi startup model: ${configuredModel}`);
+  } else {
+    console.log("[Gateway] Pi startup model: session default");
+  }
   console.log(`[Gateway] Thinking level: ${config.pi.thinkingLevel}`);
   console.log(`[Gateway] Image dir: ${config.images.dir}`);
   console.log(`[Gateway] Log file: ${config.runtime.logFile}`);
@@ -56,6 +62,7 @@ export async function startGateway(): Promise<void> {
   await memoryStore.writeBriefingFile({ maxItems: config.memory.briefingMaxItems });
   console.log(`[Gateway] Memory DB: ${config.memory.dbPath}`);
   console.log(`[Gateway] Memory briefing: ${config.memory.briefingPath}`);
+  console.log(`[Gateway] User profile: ${config.memory.userProfilePath}`);
   console.log(`[Gateway] Memory embeddings: ${config.memory.embeddingHost} (${config.memory.embeddingModel})`);
 
   const taskStore = new TaskStore({
@@ -74,6 +81,8 @@ export async function startGateway(): Promise<void> {
 
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd, {
     extensions: memoryExtensions,
+    provider: config.pi.provider,
+    model: config.pi.model,
   });
   const broadcastManager = new BroadcastManager(pi, {
     broadcastThinking: config.broadcast.thinkingEnabled,
@@ -251,6 +260,11 @@ export async function startGateway(): Promise<void> {
     );
   } else {
     console.log("[Gateway] Daily context disabled");
+  }
+
+  // Wire daily context to API server for manual trigger
+  if (dailyContext) {
+    apiServer.setDailyContext(dailyContext);
   }
 
   console.log("[Gateway] Starting Telegram bot...");
