@@ -19,6 +19,7 @@ export class BroadcastManager {
   private currentPrompt:
     | {
         message: string;
+        turnId: string;
         clientIds: Set<string>;
         startedAt: number;
         originClientId: string;
@@ -86,7 +87,7 @@ export class BroadcastManager {
    * Send a prompt to Pi and broadcast to all clients
    * Returns the clients that will receive this response
    */
-  async sendPrompt(message: string, originatingClientId: string): Promise<Set<string>> {
+  async sendPrompt(message: string, originatingClientId: string, requestedTurnId?: string): Promise<Set<string>> {
     // Serialize through promptQueue to prevent race between user and task prompts
     let resolveResult!: (value: Set<string>) => void;
     let rejectResult!: (error: Error) => void;
@@ -108,8 +109,10 @@ export class BroadcastManager {
       this.lastUserActivityAt = Date.now();
 
       const clientIds = new Set(this.clients.keys());
+      const turnId = this.resolveTurnId(requestedTurnId, originatingClientId);
       this.currentPrompt = {
         message,
+        turnId,
         clientIds,
         startedAt: Date.now(),
         originClientId: originatingClientId,
@@ -121,15 +124,16 @@ export class BroadcastManager {
 
       await this.broadcast({
         type: "user_message",
-        data: { content: message, source: originatingClientId },
+        data: { content: message, source: originatingClientId, ...this.turnMetadata() },
       }, originatingClientId);
 
-      this.pi.prompt(message, { source: "user" }).catch((err) => {
+      this.pi.prompt(message, { source: "user", id: turnId }).catch((err) => {
         console.error("[Broadcast] Pi prompt error:", err);
+        const metadata = this.turnMetadata();
         this.currentPrompt = null;
         this.broadcast({
           type: "error",
-          data: { message: err instanceof Error ? err.message : "Unknown error" },
+          data: { message: err instanceof Error ? err.message : "Unknown error", ...metadata },
         });
       });
 
@@ -160,7 +164,8 @@ export class BroadcastManager {
   async sendPromptWithImages(
     message: string,
     images: { data: string; mimeType: string; path?: string }[],
-    originatingClientId: string
+    originatingClientId: string,
+    requestedTurnId?: string
   ): Promise<Set<string>> {
     if (this.currentPrompt) {
       throw new Error("Assistant is busy with another prompt");
@@ -174,8 +179,10 @@ export class BroadcastManager {
 
     // Track which clients are participating in this prompt
     const clientIds = new Set(this.clients.keys());
+    const turnId = this.resolveTurnId(requestedTurnId, originatingClientId);
     this.currentPrompt = {
       message,
+      turnId,
       clientIds,
       startedAt: Date.now(),
       originClientId: originatingClientId,
@@ -189,12 +196,13 @@ export class BroadcastManager {
     // Note: We don't await here - Pi runs asynchronously and emits events
     // Strip paths before sending to Pi (Pi only needs base64)
     const piImages = images.map(({ data, mimeType }) => ({ data, mimeType }));
-    this.pi.promptWithImages(message, piImages, { source: "user" }).catch((err) => {
+    this.pi.promptWithImages(message, piImages, { source: "user", id: turnId }).catch((err) => {
       console.error("[Broadcast] Pi promptWithImages error:", err);
+      const metadata = this.turnMetadata();
       this.currentPrompt = null;
       this.broadcast({
         type: "error",
-        data: { message: err instanceof Error ? err.message : "Unknown error" },
+        data: { message: err instanceof Error ? err.message : "Unknown error", ...metadata },
       });
     });
 
@@ -321,8 +329,10 @@ export class BroadcastManager {
     await this.waitForIdle();
 
     const clientIds = new Set(this.clients.keys());
+    const turnId = this.resolveTurnId(input.runId, "task");
     this.currentPrompt = {
       message: input.prompt,
+      turnId,
       clientIds,
       startedAt: Date.now(),
       originClientId: "task",
@@ -337,16 +347,15 @@ export class BroadcastManager {
     );
 
     try {
-      return await this.pi.prompt(input.prompt, { source: "user" });
+      return await this.pi.prompt(input.prompt, { source: "user", id: turnId });
     } catch (error) {
+      const metadata = this.turnMetadata();
       this.currentPrompt = null;
       await this.broadcast({
         type: "error",
         data: {
           message: error instanceof Error ? error.message : "Task prompt failed",
-          origin: "task",
-          taskId: input.taskId,
-          taskRunId: input.runId,
+          ...metadata,
         },
       });
       throw error;
@@ -363,17 +372,30 @@ export class BroadcastManager {
     }
   }
 
-  private taskMetadata():
-    | { origin: "task"; taskId: string; taskRunId: string; taskName?: string }
+  private turnMetadata():
+    | {
+        turnId: string;
+        originClientId: string;
+        origin?: "task";
+        taskId?: string;
+        taskRunId?: string;
+        taskName?: string;
+      }
     | Record<string, never> {
     const prompt = this.currentPrompt;
-    if (prompt?.origin !== "task" || !prompt.taskId || !prompt.taskRunId) return {};
-    return {
-      origin: "task",
-      taskId: prompt.taskId,
-      taskRunId: prompt.taskRunId,
-      taskName: prompt.taskName,
+    if (!prompt) return {};
+    const metadata = {
+      turnId: prompt.turnId,
+      originClientId: prompt.originClientId,
     };
+    if (prompt.origin !== "task" || !prompt.taskId || !prompt.taskRunId) return metadata;
+    return { ...metadata, origin: "task", taskId: prompt.taskId, taskRunId: prompt.taskRunId, taskName: prompt.taskName };
+  }
+
+  private resolveTurnId(requestedTurnId: string | undefined, originClientId: string): string {
+    const sanitized = requestedTurnId?.trim();
+    if (sanitized) return sanitized;
+    return `${originClientId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   private setupPiListeners(): void {
@@ -395,7 +417,7 @@ export class BroadcastManager {
             thinkingId: currentThinkingId,
             content: currentThinking,
             seq: thinkingSeq,
-            ...this.taskMetadata(),
+            ...this.turnMetadata(),
           },
         });
       }
@@ -447,7 +469,7 @@ export class BroadcastManager {
             toolName: event.toolName || "tool",
             args: event.args,
             label,
-            ...this.taskMetadata(),
+            ...this.turnMetadata(),
           },
         });
 
@@ -458,7 +480,7 @@ export class BroadcastManager {
             toolCallId: event.toolCallId,
             output: "",
             truncated: false,
-            ...this.taskMetadata(),
+            ...this.turnMetadata(),
           },
         });
         lastToolOutputById.set(event.toolCallId, "");
@@ -477,7 +499,7 @@ export class BroadcastManager {
               toolCallId: event.toolCallId,
               output: truncated.text,
               truncated: truncated.wasTruncated,
-              ...this.taskMetadata(),
+              ...this.turnMetadata(),
             },
           });
         }
@@ -493,7 +515,7 @@ export class BroadcastManager {
             data: {
               source: image.source,
               alt: image.alt,
-              ...this.taskMetadata(),
+              ...this.turnMetadata(),
             },
           });
         }
@@ -507,7 +529,7 @@ export class BroadcastManager {
             toolCallId: event.toolCallId,
             output: truncated.text,
             truncated: truncated.wasTruncated,
-            ...this.taskMetadata(),
+            ...this.turnMetadata(),
           },
         });
         lastToolOutputById.delete(event.toolCallId);
@@ -517,7 +539,7 @@ export class BroadcastManager {
           data: {
             toolCallId: event.toolCallId,
             toolName: event.toolName || "tool",
-            ...this.taskMetadata(),
+            ...this.turnMetadata(),
           },
         });
 
@@ -539,7 +561,7 @@ export class BroadcastManager {
             // Only broadcast prose deltas (not tool output)
             await this.broadcast({
               type: "text_delta",
-              data: { content: delta, ...this.taskMetadata() },
+              data: { content: delta, ...this.turnMetadata() },
             });
           }
         }
@@ -563,7 +585,7 @@ export class BroadcastManager {
           ) {
             await this.broadcast({
               type: "thinking_delta",
-              data: { thinkingId: currentThinkingId, content: delta, seq: thinkingSeq, ...this.taskMetadata() },
+              data: { thinkingId: currentThinkingId, content: delta, seq: thinkingSeq, ...this.turnMetadata() },
             });
           }
         }
@@ -591,7 +613,7 @@ export class BroadcastManager {
             data: {
               source: image.source,
               alt: image.alt,
-              ...this.taskMetadata(),
+              ...this.turnMetadata(),
             },
           });
         }
@@ -645,7 +667,7 @@ export class BroadcastManager {
 
         await this.broadcast({
           type: "done",
-          data: { finalText: imageExtractions.textOnly, usage: enrichedUsage, ...this.taskMetadata() },
+          data: { finalText: imageExtractions.textOnly, usage: enrichedUsage, ...this.turnMetadata() },
         });
 
         // Reset state for next prompt
@@ -760,6 +782,7 @@ export class BroadcastManager {
           .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>).text : null))
           .filter((value): value is string => typeof value === "string");
         if (textParts.length > 0) return textParts.join("\n");
+        return "";
       }
 
       return JSON.stringify(result, null, 2);
@@ -888,9 +911,10 @@ export class BroadcastManager {
         console.warn(
           `[Broadcast] Pi process exited (code=${code}) with active prompt - clearing state and notifying clients`
         );
+        const metadata = this.turnMetadata();
         this.broadcast({
           type: "error",
-          data: { message: "Assistant process exited - please start a new session" },
+          data: { message: "Assistant process exited - please start a new session", ...metadata },
         }).catch(() => {});
         this.currentPrompt = null;
       }

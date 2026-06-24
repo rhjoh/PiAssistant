@@ -6,8 +6,6 @@
 export type WSClientMessage =
   | { type: "prompt"; message: string; id?: string }
   | { type: "prompt_with_images"; message: string; images: WSImageAttachment[]; id?: string }
-  | { type: "tool_call"; call_id: string; name: string; args?: Record<string, unknown> }
-  | { type: "tool_result"; call_id: string; name: string; ok: boolean; data: unknown }
   | { type: "abort" }
   | { type: "get_state" }
   | { type: "get_history"; limit?: number }
@@ -22,6 +20,8 @@ export interface WSImageAttachment {
 }
 
 export interface WSTaskMetadata {
+  turnId?: string;
+  originClientId?: string;
   origin?: "task";
   taskId?: string;
   taskRunId?: string;
@@ -31,7 +31,7 @@ export interface WSTaskMetadata {
 // Gateway → Client
 export type WSServerMessage =
   | { type: "connection"; data: WSConnectionData }
-  | { type: "user_message"; data: { content: string; source: string } }
+  | { type: "user_message"; data: { content: string; source: string } & WSTaskMetadata }
   | { type: "text_delta"; data: { content: string } & WSTaskMetadata }
   | { type: "thinking_delta"; data: { thinkingId: string; content: string; seq: number } & WSTaskMetadata }
   | { type: "thinking_done"; data: { thinkingId: string; content: string; seq: number } & WSTaskMetadata }
@@ -51,20 +51,7 @@ export type WSServerMessage =
   | { type: "models"; data: { models: WSModelInfo[]; current?: WSModelInfo } }
   | { type: "model_switched"; data: { success: boolean; model?: WSModelInfo; error?: string } }
   | { type: "pong"; data: { timestamp: number } }
-  | { type: "ping" }
-  | {
-      type: "tool_call";
-      call_id: string;
-      name: string;
-      args?: Record<string, unknown>;
-    }
-  | {
-      type: "tool_result";
-      call_id: string;
-      name: string;
-      ok: boolean;
-      data: unknown;
-    };
+  | { type: "ping" };
 
 export interface WSModelInfo {
   provider: string;

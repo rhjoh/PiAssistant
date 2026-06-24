@@ -1,4 +1,4 @@
-import type { Client, WSClientMessage, WSServerMessage } from "../types-ws.js";
+import type { Client, WSClientMessage } from "../types-ws.js";
 import type { BroadcastManager } from "../broadcast.js";
 import type { ImageStorage } from "../image-storage.js";
 import { CommandRegistry, type CommandContext } from "./commands.js";
@@ -29,7 +29,8 @@ export class PromptHandler implements MessageHandler {
     try {
       const participatingClients = await this.broadcastManager.sendPrompt(
         message.message,
-        client.id
+        client.id,
+        message.id
       );
 
       client.send({
@@ -107,7 +108,8 @@ export class PromptWithImagesHandler implements MessageHandler {
       const participatingClients = await this.broadcastManager.sendPromptWithImages(
         text,
         imageRefs,
-        client.id
+        client.id,
+        message.id
       );
 
       client.send({
@@ -347,91 +349,6 @@ export class PingHandler implements MessageHandler {
     client.send({
       type: "pong",
       data: { timestamp: message.timestamp || Date.now() },
-    });
-  }
-}
-
-const pendingToolCalls = new Map<string, string>();
-
-export class ToolCallHandler implements MessageHandler {
-  constructor(private broadcastManager: BroadcastManager) {}
-
-  canHandle(type: string): boolean {
-    return type === "tool_call";
-  }
-
-  async handle(client: Client, message: WSClientMessage): Promise<void> {
-    if (message.type !== "tool_call") return;
-
-    const { call_id, name, args = {} } = message;
-    const targets = this.broadcastManager
-      .getClients()
-      .filter((c) => c.id !== client.id && c.type === "websocket" && c.isAvailable());
-
-    if (targets.length === 0) {
-      client.send({
-        type: "tool_result",
-        call_id,
-        name,
-        ok: false,
-        data: { error: "No tool executor client connected" },
-      });
-      return;
-    }
-
-    pendingToolCalls.set(call_id, client.id);
-    console.log(
-      `[WebSocket] Routing tool_call ${name} (${call_id}) from ${client.id} to ${targets.length} client(s)`,
-    );
-
-    for (const target of targets) {
-      target.send({
-        type: "tool_call",
-        call_id,
-        name,
-        args,
-      });
-    }
-  }
-}
-
-export class ToolResultHandler implements MessageHandler {
-  constructor(private broadcastManager: BroadcastManager) {}
-
-  canHandle(type: string): boolean {
-    return type === "tool_result";
-  }
-
-  async handle(client: Client, message: WSClientMessage): Promise<void> {
-    if (message.type !== "tool_result") return;
-
-    const { call_id, name, ok, data } = message;
-    const requesterId = pendingToolCalls.get(call_id);
-    if (!requesterId) {
-      console.warn(
-        `[WebSocket] Received tool_result with unknown call_id from ${client.id}: ${name} (${call_id})`,
-      );
-      return;
-    }
-
-    pendingToolCalls.delete(call_id);
-    const requester = this.broadcastManager
-      .getClients()
-      .find((c) => c.id === requesterId && c.isAvailable());
-
-    if (!requester) {
-      console.warn(
-        `[WebSocket] Dropping tool_result for disconnected requester ${requesterId}: ${name} (${call_id})`,
-      );
-      return;
-    }
-
-    requester.send({
-      type: "tool_result",
-      call_id,
-      name,
-      ok,
-      data,
     });
   }
 }

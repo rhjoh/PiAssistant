@@ -221,10 +221,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   async prompt(
     message: string,
-    options?: { source?: "user" | "internal" }
+    options?: { source?: "user" | "internal"; id?: string }
   ): Promise<string> {
     return this.enqueuePrompt(() =>
-      this.runPrompt({ type: "prompt", message, id: `req-${++this.requestId}` }, options?.source ?? "user")
+      this.runPrompt(
+        { type: "prompt", message, id: options?.id ?? `req-${++this.requestId}` },
+        options?.source ?? "user"
+      )
     );
   }
 
@@ -235,9 +238,9 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   async promptWithImages(
     message: string,
     images: { data: string; mimeType: string }[],
-    options?: { source?: "user" | "internal" }
+    options?: { source?: "user" | "internal"; id?: string }
   ): Promise<string> {
-    const id = `req-${++this.requestId}`;
+    const id = options?.id ?? `req-${++this.requestId}`;
 
     // Format images for Pi RPC protocol
     const imageContents = images.map((img) => ({

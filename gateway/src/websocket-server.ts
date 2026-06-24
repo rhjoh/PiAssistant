@@ -15,8 +15,6 @@ import {
   GetHistoryHandler,
   CommandHandler,
   PingHandler,
-  ToolCallHandler,
-  ToolResultHandler,
   GetModelsHandler,
   SwitchModelHandler,
 } from "./handlers/messages.js";
@@ -57,8 +55,6 @@ export class WebSocketGateway {
       new GetStateHandler(broadcastManager),
       new GetHistoryHandler(this.imageStorage, config.pi.sessionPath),
       new CommandHandler({ broadcastManager, taskStore, taskScheduler }),
-      new ToolCallHandler(broadcastManager),
-      new ToolResultHandler(broadcastManager),
       new PingHandler(),
       new GetModelsHandler(broadcastManager),
       new SwitchModelHandler(broadcastManager),
