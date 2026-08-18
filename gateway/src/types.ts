@@ -1,13 +1,42 @@
+/**
+ * How a `prompt` sent while the agent is already streaming is delivered:
+ * - "steer": queued and delivered after the current assistant turn and its
+ *   tool batch, before the next LLM call.
+ * - "followUp": queued and delivered only after the agent would otherwise finish.
+ */
+export type StreamingBehavior = "steer" | "followUp";
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface PiModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+  contextWindow?: number;
+  [key: string]: unknown;
+}
+
 // Pi RPC Command Types (sent to Pi via stdin)
 export type PiCommand =
-  | { type: "prompt"; message: string; images?: ImageContent[]; id?: string }
+  | {
+      type: "prompt";
+      message: string;
+      images?: ImageContent[];
+      id?: string;
+      streamingBehavior?: StreamingBehavior;
+    }
+  | { type: "steer"; message: string; images?: ImageContent[]; id?: string }
+  | { type: "follow_up"; message: string; images?: ImageContent[]; id?: string }
   | { type: "abort"; id?: string }
   | { type: "get_state"; id?: string }
   | { type: "get_messages"; id?: string }
   | { type: "get_session_stats"; id?: string }
   | { type: "get_available_models"; id?: string }
+  | { type: "get_available_thinking_levels"; id?: string }
   | { type: "set_model"; provider: string; modelId: string; id?: string }
-  | { type: "set_thinking_level"; level: string; id?: string }
+  | { type: "set_thinking_level"; level: ThinkingLevel; id?: string }
   | { type: "new_session"; parentSession?: string; id?: string }
   | { type: "switch_session"; sessionPath: string; id?: string };
 
@@ -30,8 +59,8 @@ export interface PiResponse {
 
 // Pi State from get_state response
 export interface PiState {
-  model: { provider: string; id: string } | null;
-  thinkingLevel: string;
+  model: PiModelInfo | null;
+  thinkingLevel: ThinkingLevel;
   isStreaming: boolean;
   isCompacting: boolean;
   steeringMode: string;
@@ -62,15 +91,54 @@ export interface AssistantMessage {
 
 // Pi RPC Event Types (streamed from Pi)
 export type PiEvent =
+  // Agent lifecycle. agent_end is one low-level run; agent_settled is the
+  // authoritative idle boundary (no retry/compaction/queued continuation left).
+  | { type: "agent_start" }
+  | { type: "agent_end"; messages?: AssistantMessage[]; willRetry?: boolean }
+  | { type: "agent_settled" }
+  // Turn lifecycle - a turn is one assistant response + any tool calls/results.
+  | { type: "turn_start" }
+  | { type: "turn_end"; message?: PiAgentMessage; toolResults?: PiAgentMessage[] }
+  // Message lifecycle - emitted for user, assistant, and toolResult messages.
+  | { type: "message_start"; message: PiAgentMessage }
+  | { type: "message_end"; message: PiAgentMessage }
   | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
+  // Pending steering/follow-up queue changed (texts only, no client IDs).
+  | { type: "queue_update"; steering: string[]; followUp: string[] }
   // Tool execution events (Pi RPC schema, see pi-coding-agent docs/rpc.md)
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; args?: unknown }
-  | { type: "agent_end"; messages?: AssistantMessage[] }
-  | { type: "response"; id?: string; command: string; success: boolean }
+  // Direct bash command output chunks (id matches the bash command's id).
+  | { type: "bash_execution_update"; id: string; delta: string }
+  // Compaction (installed Pi emits compaction_start/compaction_end).
+  | { type: "compaction_start"; reason: string }
+  | {
+      type: "compaction_end";
+      reason?: string;
+      result: CompactionResult | null;
+      aborted: boolean;
+      willRetry?: boolean;
+    }
+  // Retry events.
+  | { type: "auto_retry_start" }
+  | { type: "auto_retry_end"; success: boolean }
+  | { type: "summarization_retry_scheduled" }
+  | { type: "summarization_retry_attempt_start" }
+  | { type: "summarization_retry_finished"; success?: boolean }
+  // Legacy compaction event names (older Pi versions).
   | { type: "auto_compaction_start"; reason: "threshold" | "overflow" }
-  | { type: "auto_compaction_end"; result: CompactionResult | null; aborted: boolean; willRetry: boolean };
+  | { type: "auto_compaction_end"; result: CompactionResult | null; aborted: boolean; willRetry: boolean }
+  | { type: "response"; id?: string; command: string; success: boolean };
+
+/** An LLM/agent message as carried by message_start/message_end/turn_end events. */
+export interface PiAgentMessage {
+  role: string;
+  content: unknown;
+  timestamp?: number;
+  usage?: TokenUsage;
+  [key: string]: unknown;
+}
 
 export interface CompactionResult {
   summary: string;

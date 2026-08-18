@@ -17,6 +17,8 @@ import {
   PingHandler,
   GetModelsHandler,
   SwitchModelHandler,
+  GetThinkingLevelsHandler,
+  SetThinkingLevelHandler,
 } from "./handlers/messages.js";
 
 interface WSClient extends Client {
@@ -58,6 +60,8 @@ export class WebSocketGateway {
       new PingHandler(),
       new GetModelsHandler(broadcastManager),
       new SwitchModelHandler(broadcastManager),
+      new GetThinkingLevelsHandler(broadcastManager),
+      new SetThinkingLevelHandler(broadcastManager),
     ]);
   }
 
@@ -167,6 +171,8 @@ export class WebSocketGateway {
             connected: true,
             model: stateMessage.data.model,
             contextWindow: stateMessage.data.contextWindow,
+            thinkingLevel: stateMessage.data.thinkingLevel,
+            availableThinkingLevels: stateMessage.data.availableThinkingLevels,
           },
         });
       } else {

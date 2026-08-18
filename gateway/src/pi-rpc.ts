@@ -6,9 +6,28 @@ import { EventEmitter } from "node:events";
  * Inactivity timeout for prompts. If Pi stops emitting events for this long
  * during an active prompt, the prompt is considered hung and cleaned up.
  * Resets on each event (text_delta, tool_execution_update, etc.).
+ * Overridable via the `promptInactivityTimeoutMs` constructor option.
  */
-const PROMPT_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-import type { PiCommand, PiEvent, PiResponse, PiState } from "./types.js";
+const DEFAULT_PROMPT_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/** HERDR_* variables herdr injects into panes; meaningless for headless RPC children. */
+const HERDR_ENV_VARS = [
+  "HERDR_ENV",
+  "HERDR_PANE_ID",
+  "HERDR_TAB_ID",
+  "HERDR_WORKSPACE_ID",
+  "HERDR_SOCKET_PATH",
+  "HERDR_ACTIVE_PANE_ID",
+];
+
+function scrubHerdrEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const scrubbed = { ...env };
+  for (const name of HERDR_ENV_VARS) {
+    delete scrubbed[name];
+  }
+  return scrubbed;
+}
+import type { PiCommand, PiEvent, PiResponse, PiState, ThinkingLevel } from "./types.js";
 
 export interface PiRpcEvents {
   event: [PiEvent];
@@ -28,6 +47,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   private parseErrorCount = 0;
   private parseErrorSuppressed = false;
   private activePromptSource: "user" | "internal" | null = null;
+  /**
+   * True while a submitDuringRun submission may be started by Pi as a NEW root
+   * prompt (submit/settle race). When that happens the new run's events arrive
+   * with no runPrompt attached, so activePromptSource would stay null and the
+   * gateway would suppress them. Set when submitting, cleared at agent_settled.
+   */
+  private pendingDuringRunSubmission = false;
   private promptQueue: Promise<void> = Promise.resolve();
   /** Reject function for the actively running runPrompt, so we can unstick on crash. */
   private pendingPromptReject: ((err: Error) => void) | null = null;
@@ -42,8 +68,15 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     private cwd: string,
     private options: {
       extensions?: string[];
+      excludeTools?: string[];
       provider?: string;
       model?: string;
+      /** Inactivity timeout for active prompts (default: 5 minutes). */
+      promptInactivityTimeoutMs?: number;
+      /** How long the process must survive after spawn before start() resolves (default: 500ms). */
+      startupGraceMs?: number;
+      /** Test seam: override the child-process spawn implementation. */
+      spawnImpl?: typeof spawn;
     } = {}
   ) {
     super();
@@ -119,6 +152,11 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       args.push("-e", extension);
     }
 
+    const excludeTools = this.options.excludeTools ?? [];
+    if (excludeTools.length > 0) {
+      args.push("--exclude-tools", excludeTools.join(","));
+    }
+
     // Add thinking level if specified (for models that support it)
     if (thinkingLevel && thinkingLevel !== "off") {
       args.push("--thinking", thinkingLevel);
@@ -129,17 +167,24 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
 
   private async startProcess(thinkingLevel: string | undefined, includeConfiguredModel: boolean): Promise<boolean> {
     const args = this.buildArgs(thinkingLevel, includeConfiguredModel);
+    const spawnFn = this.options.spawnImpl ?? spawn;
 
-    this.process = spawn("pi", args, {
+    this.process = spawnFn("pi", args, {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      // Headless RPC mode must not look like an interactive agent to herdr:
+      // strip the pane/socket env (HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH,
+      // ...) inherited from the gateway's launching pane, or the herdr
+      // integration extension would register this pane as a Pi agent even
+      // though there is no PTY/TUI. See herdr-agent-state.ts mode gate.
+      env: scrubHerdrEnv(process.env),
     });
 
     this.bufferCleanup = attachJsonlReader(this.process.stdout!, (line) => this.handleLine(line));
 
     this.process.stderr?.on("data", (data) => {
       const msg = data.toString().trim();
-      console.error("[Pi stderr]", msg);
+      console.error(`[Pi stderr] Output captured (${msg.length} chars)`);
       // Propagate API/provider errors (quota exceeded, plan cancelled, etc.) to listeners
       if (this.activePromptSource === "user") {
         this.emit("error", new Error(`Pi error: ${msg}`));
@@ -162,6 +207,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
         );
         this.activePromptSource = null;
       }
+      this.pendingDuringRunSubmission = false;
       if (this.pendingPromptReject) {
         this.pendingPromptReject(new Error(`Pi process exited with code ${code}`));
         this.pendingPromptReject = null;
@@ -182,7 +228,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   }
 
   private waitForProcessToSurviveStartup(): Promise<boolean> {
-    const startupGraceMs = 500;
+    const startupGraceMs = this.options.startupGraceMs ?? 500;
 
     return new Promise<boolean>((resolve) => {
       const markStarted = () => {
@@ -217,6 +263,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.promptInactivityTimer = null;
     }
     this.activePromptSource = null;
+    this.pendingDuringRunSubmission = false;
   }
 
   async prompt(
@@ -249,15 +296,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       mimeType: img.mimeType,
     }));
 
-    // Log the full JSON being sent (first 500 chars to avoid huge logs)
-    const payload = {
-      type: "prompt",
-      message,
-      images: imageContents.map((img) => ({ ...img, data: img.data.substring(0, 100) + "..." })),
-      id,
-    };
-    console.log(`[Pi RPC] Sending prompt with ${images.length} image(s):`);
-    console.log(`[Pi RPC] Payload preview:`, JSON.stringify(payload).substring(0, 500));
+    console.log(`[Pi RPC] Sending prompt with ${images.length} image(s) (chars=${message.length})`);
 
     return this.enqueuePrompt(() =>
       this.runPrompt(
@@ -272,12 +311,58 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     );
   }
 
+  /**
+   * Submit a steering or follow-up message to the currently active Pi run.
+   *
+   * Sent immediately through sendAndWait() — deliberately NOT through
+   * `promptQueue` or `runPrompt()`. Pi owns the queue decision: if the run is
+   * still active, Pi queues the message per `streamingBehavior`; if the run
+   * settled in the meantime, Pi starts it as a normal prompt. The returned
+   * response reflects Pi's acceptance/rejection of that decision.
+   *
+   * Note: sendAndWait assigns the correlation id used in the RPC command, so
+   * `options.id` is only used for logging - pending-queue matching is FIFO.
+   */
+  async submitDuringRun(
+    message: string,
+    behavior: "steer" | "followUp",
+    options?: {
+      source?: "user" | "internal";
+      id?: string;
+      images?: { data: string; mimeType: string }[];
+    }
+  ): Promise<PiResponse> {
+    const command: Extract<PiCommand, { type: "prompt" }> = {
+      type: "prompt",
+      message,
+      streamingBehavior: behavior,
+    };
+    if (options?.images && options.images.length > 0) {
+      command.images = options.images.map((img) => ({
+        type: "image",
+        data: img.data,
+        mimeType: img.mimeType,
+      }));
+    }
+
+    console.log(
+      `[Pi RPC] Submit during run (${behavior}, ${options?.source ?? "user"}, pendingId=${options?.id ?? "n/a"}, chars=${message.length})`
+    );
+
+    this.pendingDuringRunSubmission = true;
+    return this.sendAndWait(command);
+  }
+
   async getState(): Promise<PiResponse> {
     return this.sendAndWait({ type: "get_state" });
   }
 
   async getAvailableModels(): Promise<PiResponse> {
     return this.sendAndWait({ type: "get_available_models" });
+  }
+
+  async getAvailableThinkingLevels(): Promise<PiResponse> {
+    return this.sendAndWait({ type: "get_available_thinking_levels" });
   }
 
   /**
@@ -301,7 +386,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
   /**
    * Set thinking level for models that support it (off, minimal, low, medium, high, xhigh)
    */
-  async setThinkingLevel(level: string): Promise<void> {
+  async setThinkingLevel(level: ThinkingLevel): Promise<void> {
     const response = await this.sendAndWait({
       type: "set_thinking_level",
       level,
@@ -344,6 +429,27 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     this.send({ type: "abort" });
   }
 
+  /**
+   * Forcefully reject the active prompt without waiting for Pi to emit
+   * agent_end. Used by abort escalation to unstick the gateway when a tool
+   * call ignores the abort signal and Pi never settles the turn.
+   */
+  forceRejectActivePrompt(reason: string): void {
+    if (this.pendingPromptReject) {
+      console.warn(`[PiRpc] Force-rejecting active prompt: ${reason}`);
+      const reject = this.pendingPromptReject;
+      const cleanup = this.pendingPromptCleanup;
+      // Cleanup first (removes listeners, clears timer + activePromptSource),
+      // then reject so the caller's .catch fires with our reason.
+      cleanup?.();
+      reject(new Error(reason));
+    } else if (this.activePromptSource !== null) {
+      // No pending promise to reject but Pi state is stale — clear it anyway.
+      console.warn(`[PiRpc] Clearing stale active prompt state: ${reason}`);
+      this.activePromptSource = null;
+    }
+  }
+
   private enqueuePrompt(task: () => Promise<string>): Promise<string> {
     const run = this.promptQueue.then(task, task);
     this.promptQueue = run.then(
@@ -366,10 +472,8 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.currentText = "";
       this.activePromptSource = source;
       const promptId = command.id ?? `prompt-${Date.now()}`;
-      const promptPreview = this.previewText(command.message);
-
       console.debug(
-        `[Pi RPC] Prompt start (${source}) id=${promptId} text="${promptPreview}" queueActive=${this.isPromptActive}`
+        `[Pi RPC] Prompt start (${source}) id=${promptId} chars=${command.message.length} queueActive=${this.isPromptActive}`
       );
 
       // 🛡️ Track cleanup and reject so we can unstick on process crash
@@ -389,15 +493,16 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
         if (this.promptInactivityTimer) {
           clearTimeout(this.promptInactivityTimer);
         }
+        const timeoutMs = this.options.promptInactivityTimeoutMs ?? DEFAULT_PROMPT_INACTIVITY_TIMEOUT_MS;
         this.promptInactivityTimer = setTimeout(() => {
           const err = new Error(
-            `Prompt timed out after ${PROMPT_INACTIVITY_TIMEOUT_MS / 1000}s of inactivity (source=${source})`
+            `Prompt timed out after ${timeoutMs / 1000}s of inactivity (source=${source})`
           );
           console.error(`[Pi RPC] ${err.message}`);
           this.promptInactivityTimer = null;
           cleanup();
           reject(err);
-        }, PROMPT_INACTIVITY_TIMEOUT_MS);
+        }, timeoutMs);
         // Don't keep Node alive for this timer alone
         this.promptInactivityTimer.unref();
       };
@@ -406,11 +511,53 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       this.pendingPromptReject = reject;
       this.pendingPromptCleanup = cleanup;
 
+      // One runPrompt promise can span several low-level Pi runs (retry,
+      // compaction recovery, queued continuations). agent_end is NOT final:
+      // only agent_settled is. This guard makes settlement exactly-once even
+      // if abort escalation, process exit, or a race fires first.
+      let settled = false;
+      let lastUsageSummary = "none";
+
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        const finalText = this.currentText;
+        console.log(
+          `[Pi RPC] Run settled (${source}) id=${promptId} finalLen=${finalText.length} usage=${lastUsageSummary}`
+        );
+        cleanup();
+        resolve(finalText);
+      };
+
       const onEvent = (event: PiEvent) => {
         // Reset inactivity timer on any event from Pi
         resetInactivityTimer();
 
-        if (event.type === "message_update") {
+        if (event.type === "agent_start") {
+          // A new low-level run begins (first run, retry, or queued
+          // continuation). Accumulated text belongs to the previous run.
+          this.currentText = "";
+          console.log(`[Pi RPC] Event agent_start (${source}) id=${promptId}`);
+        } else if (event.type === "message_start") {
+          const msg = event.message;
+          if (msg.role === "user") {
+            console.log(
+              `[Pi RPC] Event message_start user (${source}) id=${promptId}`
+            );
+          } else {
+            console.debug(`[Pi RPC] Event message_start ${msg.role} (${source}) id=${promptId}`);
+          }
+        } else if (event.type === "message_end") {
+          console.debug(`[Pi RPC] Event message_end ${event.message.role} (${source}) id=${promptId}`);
+        } else if (event.type === "turn_start") {
+          console.debug(`[Pi RPC] Event turn_start (${source}) id=${promptId}`);
+        } else if (event.type === "turn_end") {
+          console.debug(`[Pi RPC] Event turn_end (${source}) id=${promptId}`);
+        } else if (event.type === "queue_update") {
+          console.log(
+            `[Pi RPC] Event queue_update (${source}) id=${promptId} steering=${event.steering.length} followUp=${event.followUp.length}`
+          );
+        } else if (event.type === "message_update") {
           if (event.assistantMessageEvent.type === "text_delta") {
             this.currentText += event.assistantMessageEvent.delta;
             this.emit("text", this.currentText);
@@ -418,7 +565,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
             // Use Pi's finalized text; it can include corrected spacing vs raw deltas.
             this.currentText = event.assistantMessageEvent.text;
             console.log(
-              `[Pi RPC] Event text_done (${source}) id=${promptId} total=${this.currentText.length} preview="${this.previewText(this.currentText)}"`
+              `[Pi RPC] Event text_done (${source}) id=${promptId} total=${this.currentText.length}`
             );
             this.emit("text", this.currentText);
           } else if (event.assistantMessageEvent.type === "thinking_delta") {
@@ -435,26 +582,34 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
             `[Pi RPC] Event tool_execution_start (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId}`
           );
         } else if (event.type === "tool_execution_update") {
-          const partialLength = this.previewUnknown(event.partialResult).length;
+          const partialLength = this.serializedLength(event.partialResult);
           // Suppressed from log file — too noisy during streaming.
           console.debug(
-            `[Pi RPC] Event tool_execution_update (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} previewChars=${partialLength}`
+            `[Pi RPC] Event tool_execution_update (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} resultChars=${partialLength}`
           );
         } else if (event.type === "tool_execution_end") {
           console.log(
-            `[Pi RPC] Event tool_execution_end (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} isError=${event.isError} resultPreview="${this.previewUnknown(event.result)}"`
+            `[Pi RPC] Event tool_execution_end (${source}) id=${promptId} tool=${event.toolName} call=${event.toolCallId} isError=${event.isError} resultChars=${this.serializedLength(event.result)}`
           );
         } else if (event.type === "agent_end") {
-          const finalText = this.currentText;
-          const usage = this.extractUsageSummary(event);
+          lastUsageSummary = this.extractUsageSummary(event);
           console.log(
-            `[Pi RPC] Event agent_end (${source}) id=${promptId} finalLen=${finalText.length} usage=${usage} preview="${this.previewText(finalText)}"`
+            `[Pi RPC] Event agent_end (${source}) id=${promptId} finalLen=${this.currentText.length} willRetry=${event.willRetry ?? false} usage=${lastUsageSummary}`
           );
-          cleanup();
-          resolve(finalText);
+          // One low-level run is done, but the session-level run may continue
+          // (retry, compaction recovery, queued steering/follow-up). Do NOT
+          // resolve or clear state here — agent_settled is the idle boundary.
+        } else if (event.type === "agent_settled") {
+          settle();
         } else if (event.type === "response") {
           console.log(
             `[Pi RPC] Event response (${source}) id=${promptId} command=${event.command} success=${event.success}`
+          );
+        } else if (event.type === "compaction_start") {
+          console.log(`[Pi RPC] Event compaction_start reason=${event.reason}`);
+        } else if (event.type === "compaction_end") {
+          console.log(
+            `[Pi RPC] Event compaction_end aborted=${event.aborted} willRetry=${event.willRetry ?? false} tokensBefore=${event.result?.tokensBefore ?? "n/a"}`
           );
         } else if (event.type === "auto_compaction_start") {
           console.log(`[Pi RPC] Event auto_compaction_start reason=${event.reason}`);
@@ -462,6 +617,10 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
           console.log(
             `[Pi RPC] Event auto_compaction_end aborted=${event.aborted} willRetry=${event.willRetry} tokensBefore=${event.result?.tokensBefore ?? "n/a"}`
           );
+        } else if (event.type === "auto_retry_start") {
+          console.log(`[Pi RPC] Event auto_retry_start`);
+        } else if (event.type === "auto_retry_end") {
+          console.log(`[Pi RPC] Event auto_retry_end success=${event.success}`);
         }
       };
 
@@ -481,19 +640,13 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     });
   }
 
-  private previewText(text: string, max = 120): string {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    if (normalized.length <= max) return normalized;
-    return `${normalized.slice(0, max)}...`;
-  }
-
-  private previewUnknown(value: unknown, max = 120): string {
-    if (typeof value === "string") return this.previewText(value, max);
-    if (value === null || value === undefined) return String(value);
+  private serializedLength(value: unknown): number {
+    if (typeof value === "string") return value.length;
+    if (value === null || value === undefined) return 0;
     try {
-      return this.previewText(JSON.stringify(value), max);
+      return JSON.stringify(value)?.length ?? 0;
     } catch {
-      return "[unserializable]";
+      return 0;
     }
   }
 
@@ -529,6 +682,19 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
       if (data.type === "response") {
         this.emit("response", data as PiResponse);
       } else {
+        // Submit/settle race: Pi started a submitDuringRun submission as a new
+        // root prompt. Mark it as a user run so events are not suppressed.
+        if (
+          data.type === "agent_start" &&
+          this.activePromptSource === null &&
+          this.pendingDuringRunSubmission
+        ) {
+          console.log("[Pi RPC] Treating raced agent_start as a user run (submitDuringRun submission)");
+          this.activePromptSource = "user";
+        }
+        if (data.type === "agent_settled") {
+          this.pendingDuringRunSubmission = false;
+        }
         this.emit("event", data as PiEvent);
 
         // Emit convenience event for tool results
@@ -539,7 +705,7 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     } catch (err) {
       this.parseErrorCount++;
       if (this.parseErrorCount <= 5) {
-        console.error("[Pi RPC] Failed to parse:", trimmed.slice(0, 200));
+        console.error(`[Pi RPC] Failed to parse event (${trimmed.length} chars)`);
       } else if (!this.parseErrorSuppressed) {
         console.error("[Pi RPC] Suppressing further parse errors...");
         this.parseErrorSuppressed = true;

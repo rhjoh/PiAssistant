@@ -1,15 +1,8 @@
 import type { Client, WSClientMessage } from "../types-ws.js";
-import type { BroadcastManager } from "../broadcast.js";
+import { isThinkingLevel, type BroadcastManager } from "../broadcast.js";
 import type { ImageStorage } from "../image-storage.js";
 import { CommandRegistry, type CommandContext } from "./commands.js";
-
-const PROMPT_LOG_PREVIEW_MAX_CHARS = 180;
-
-function formatPromptForLog(prompt: string): string {
-  const normalized = prompt.replace(/\s+/g, " ").trim();
-  if (normalized.length <= PROMPT_LOG_PREVIEW_MAX_CHARS) return normalized;
-  return `${normalized.slice(0, PROMPT_LOG_PREVIEW_MAX_CHARS)}...`;
-}
+import { toolLabelForCallId } from "../tool-call-cache.js";
 
 export interface MessageHandler {
   canHandle(type: string): boolean;
@@ -27,10 +20,11 @@ export class PromptHandler implements MessageHandler {
     if (message.type !== "prompt") return;
     
     try {
-      const participatingClients = await this.broadcastManager.sendPrompt(
+      await this.broadcastManager.sendPrompt(
         message.message,
         client.id,
-        message.id
+        message.id,
+        message.streamingBehavior
       );
 
       client.send({
@@ -109,7 +103,8 @@ export class PromptWithImagesHandler implements MessageHandler {
         text,
         imageRefs,
         client.id,
-        message.id
+        message.id,
+        message.streamingBehavior
       );
 
       client.send({
@@ -138,7 +133,9 @@ export class AbortHandler implements MessageHandler {
 
   async handle(_client: Client, message: WSClientMessage): Promise<void> {
     if (message.type !== "abort") return;
-    this.broadcastManager.abort();
+    // Await the full escalation (grace period -> force-clear -> Pi restart)
+    // so the client's abort request reliably unsticks the session.
+    await this.broadcastManager.abort();
   }
 }
 
@@ -244,6 +241,9 @@ export class GetHistoryHandler implements MessageHandler {
               timestamp: entry.timestamp,
               toolCallId: entry.message.toolCallId,
               toolName: entry.message.toolName,
+              // The session file doesn't persist tool arguments; reuse the
+              // label this gateway computed when the call ran (if it did).
+              label: toolLabelForCallId(entry.message.toolCallId),
               isError: entry.message.isError,
             });
           }
@@ -252,7 +252,8 @@ export class GetHistoryHandler implements MessageHandler {
         }
       }
 
-      return messages.slice(-limit);
+      // Non-positive limits explicitly request the complete session history.
+      return limit > 0 ? messages.slice(-limit) : messages;
     } catch (err) {
       console.error("[WebSocket] Error reading session file:", err);
       return [];
@@ -306,7 +307,7 @@ export class CommandHandler implements MessageHandler {
     if (message.type !== "command") return;
     
     const { command, args = [] } = message;
-    console.log(`[WebSocket] Command received: ${command} ${args?.join(" ") || ""}`);
+    console.log(`[WebSocket] Command received: ${command} (args=${args.length})`);
 
     try {
       const responseText = await this.registry.execute(command, args);
@@ -422,6 +423,51 @@ export class SwitchModelHandler implements MessageHandler {
   }
 }
 
+export class GetThinkingLevelsHandler implements MessageHandler {
+  constructor(private broadcastManager: BroadcastManager) {}
+
+  canHandle(type: string): boolean {
+    return type === "get_thinking_levels";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "get_thinking_levels") return;
+    try {
+      const data = await this.broadcastManager.getThinkingLevels();
+      client.send({ type: "thinking_levels", data });
+    } catch (err) {
+      client.send({
+        type: "error",
+        data: {
+          message: err instanceof Error ? err.message : "Failed to get thinking levels",
+        },
+      });
+    }
+  }
+}
+
+export class SetThinkingLevelHandler implements MessageHandler {
+  constructor(private broadcastManager: BroadcastManager) {}
+
+  canHandle(type: string): boolean {
+    return type === "set_thinking_level";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "set_thinking_level") return;
+    if (!isThinkingLevel(message.level)) {
+      client.send({
+        type: "error",
+        data: { message: "Invalid thinking level" },
+      });
+      return;
+    }
+
+    const result = await this.broadcastManager.setThinkingLevel(message.level);
+    client.send({ type: "thinking_level_changed", data: result });
+  }
+}
+
 export class MessageRouter {
   private handlers: MessageHandler[] = [];
 
@@ -440,9 +486,8 @@ export class MessageRouter {
           return name;
         })
         .join(", ");
-      const preview = JSON.stringify(message).slice(0, 400);
       console.warn(
-        `[WebSocket] Unknown message type from ${client.id}: ${(message as { type?: string }).type} | payload=${preview} | handlers=${supported}`
+        `[WebSocket] Unknown message type from ${client.id}: ${(message as { type?: string }).type} | handlers=${supported}`
       );
       client.send({
         type: "error",

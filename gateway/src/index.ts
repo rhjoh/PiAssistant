@@ -4,12 +4,12 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { handleStatus, handleModel, handleSession, handleNew } from "./commands.js";
+import { handleStatus, handleModel, handleSession } from "./commands.js";
 import { PiRpcClient } from "./pi-rpc.js";
 import { SessionManager } from "./session-manager.js";
 import { TelegramBot } from "./telegram.js";
 import { TelegramClient } from "./telegram-client.js";
-import { BroadcastManager } from "./broadcast.js";
+import { BroadcastManager, isThinkingLevel } from "./broadcast.js";
 import { WebSocketGateway } from "./websocket-server.js";
 import { Heartbeat } from "./heartbeat.js";
 import { ApiServer } from "./api-server.js";
@@ -81,11 +81,16 @@ export async function startGateway(): Promise<void> {
 
   const pi = new PiRpcClient(config.pi.sessionPath, config.pi.cwd, {
     extensions: memoryExtensions,
+    excludeTools: config.pi.excludeTools,
     provider: config.pi.provider,
     model: config.pi.model,
+    promptInactivityTimeoutMs: config.pi.promptInactivityTimeoutMs,
   });
   const broadcastManager = new BroadcastManager(pi, {
     broadcastThinking: config.broadcast.thinkingEnabled,
+    abortGraceMs: config.broadcast.abortGraceMs,
+    clientSendTimeoutMs: config.broadcast.clientSendTimeoutMs,
+    eventHandlerTimeoutMs: config.broadcast.eventHandlerTimeoutMs,
   });
   const sessionManager = new SessionManager(pi, {
     sessionPath: config.pi.sessionPath,
@@ -103,6 +108,7 @@ export async function startGateway(): Promise<void> {
   const taskRunner = new TaskRunner(taskStore, broadcastManager);
   const taskScheduler = new TaskScheduler(taskStore, taskRunner, {
     enabled: config.tasks.enabled,
+    missedRunGraceMs: config.tasks.missedRunGraceMs,
   });
 
   const wsGateway = new WebSocketGateway(
@@ -137,23 +143,7 @@ export async function startGateway(): Promise<void> {
 
   pi.on("event", (event) => {
     if (event.type === "tool_execution_start") {
-      const args = event.args as Record<string, unknown>;
-      let detail = "";
-      if (event.toolName === "bash" && typeof args?.command === "string") {
-        detail = ` - ${args.command}`;
-      } else if (
-        (event.toolName === "read" || event.toolName === "edit" || event.toolName === "write") &&
-        typeof args?.path === "string"
-      ) {
-        detail = ` - ${args.path}`;
-      } else if (typeof args?.path === "string") {
-        detail = ` - ${args.path}`;
-      } else if (typeof args?.pattern === "string") {
-        detail = ` - ${args.pattern}`;
-      } else if (typeof args?.query === "string") {
-        detail = ` - ${args.query}`;
-      }
-      console.log(`[Pi] Tool: ${event.toolName}${detail}`);
+      console.log(`[Pi] Tool started: ${event.toolName}`);
     }
   });
 
@@ -183,6 +173,9 @@ export async function startGateway(): Promise<void> {
 
   if (config.pi.thinkingLevel && config.pi.thinkingLevel !== "off") {
     try {
+      if (!isThinkingLevel(config.pi.thinkingLevel)) {
+        throw new Error(`Invalid PI_THINKING_LEVEL: ${config.pi.thinkingLevel}`);
+      }
       await pi.setThinkingLevel(config.pi.thinkingLevel);
     } catch (err) {
       console.warn("[Gateway] Failed to set thinking level:", err);
@@ -198,7 +191,7 @@ export async function startGateway(): Promise<void> {
   taskScheduler.init();
 
   telegram.onMessage(async (text, ctx) => {
-    console.log(`[Telegram] Incoming message: ${text.slice(0, 100)}`);
+    console.log(`[Telegram] Incoming message received (chars=${text.length})`);
     telegramClient.setContext(ctx);
     await broadcastManager.sendPrompt(text, "telegram");
   });
@@ -226,9 +219,8 @@ export async function startGateway(): Promise<void> {
     config.pi.cwd,
     {
       intervalMs: config.heartbeat.intervalMs,
-      quietWindowMs: Math.max(config.heartbeat.intervalMs, 15 * 60 * 1000),
+      quietWindowMs: 5 * 60 * 1000,
       onTick: () => statusProvider.recordHeartbeat(),
-      isBusy: () => broadcastManager.isPromptInFlight(),
       hasRecentUserActivity: (windowMs) => broadcastManager.hasRecentUserActivity(windowMs),
     }
   );
@@ -248,10 +240,15 @@ export async function startGateway(): Promise<void> {
     briefingPath: config.memory.briefingPath,
     maxTranscriptChars: config.memory.dailyContextMaxTranscriptChars,
     onTick: () => statusProvider.recordDailyContextRun(),
-    isBusy: () => pi.isPromptActive,
   });
 
-  telegram.onNewSession(async () => handleNew(sessionManager, config.pi.sessionPath));
+  telegram.onNewSession(async () => broadcastManager.handleNewCommand());
+
+  telegram.onAbort(async (ctx) => {
+    console.log("[Telegram] /stop requested - aborting active prompt");
+    await broadcastManager.abort();
+    await ctx.reply("⏹️ Prompt aborted.");
+  });
 
   if (config.memory.dailyContextEnabled) {
     await dailyContext.start();

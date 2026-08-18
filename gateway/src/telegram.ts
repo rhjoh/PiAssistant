@@ -202,6 +202,7 @@ export class TelegramBot {
   private sessionHandler: SessionHandler | null = null;
   private newSessionHandler: NewSessionHandler | null = null;
   private taskHandler: TaskHandler | null = null;
+  private abortHandler: ((ctx: Context) => Promise<void> | void) | null = null;
 
   constructor() {
     this.bot = new Bot(config.telegram.token);
@@ -219,7 +220,7 @@ export class TelegramBot {
       return false;
     }
     if (ctx.from?.id !== config.telegram.allowedUserId) {
-      console.log(`[Telegram] Unauthorized command from user ${ctx.from?.id}, ignoring`);
+      console.log("[Telegram] Unauthorized command ignored");
       return false;
     }
     return true;
@@ -314,6 +315,16 @@ export class TelegramBot {
       }
     });
 
+    // Handle /stop command (abort current generation / stuck tool call)
+    this.bot.command(["stop", "abort"], async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
+      if (!this.abortHandler) {
+        await ctx.reply("No abort handler configured.");
+        return;
+      }
+      await this.abortHandler(ctx);
+    });
+
     // Handle /new command
     this.bot.command("new", async (ctx) => {
       if (!this.isAuthorized(ctx)) return;
@@ -378,6 +389,10 @@ export class TelegramBot {
 
   onTask(handler: TaskHandler): void {
     this.taskHandler = handler;
+  }
+
+  onAbort(handler: (ctx: Context) => Promise<void> | void): void {
+    this.abortHandler = handler;
   }
 
   /**

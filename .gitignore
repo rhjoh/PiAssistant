@@ -13,6 +13,7 @@ tmp/
 
 .claude
 AGENTS.md
+**/.pi/
 
 # Swift/macOS client build artifacts
 .build/
@@ -21,6 +22,14 @@ DerivedData/
 *.xcuserstate
 .swiftpm/
 
+# Rust client build artifacts
+clients/**/target/
+
 # Runtime artifacts
 *.pid
 *.log
+
+# Python client artifacts
+__pycache__/
+*.py[cod]
+*.py.bak
