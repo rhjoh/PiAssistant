@@ -22,7 +22,6 @@ pub enum ConnectionState {
     #[allow(dead_code)]
     Connecting,
     Connected,
-    Error,
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +172,6 @@ pub struct App {
     pub is_processing: bool,
     pub latency_ms: Option<u64>,
     pub token_usage: TokenUsage,
-    pub error_message: Option<String>,
     pub show_help: bool,
     pub show_thinking: bool,
     pub show_tools: bool,
@@ -239,7 +237,6 @@ impl App {
             is_processing: false,
             latency_ms: None,
             token_usage: TokenUsage::default(),
-            error_message: None,
             show_help: false,
             show_thinking: true,
             show_tools: true,
@@ -269,7 +266,6 @@ impl App {
         match event {
             WsEvent::Connected => {
                 self.connection_state = ConnectionState::Connected;
-                self.error_message = None;
                 info!("Connected to gateway");
             }
             WsEvent::Disconnected => {
@@ -282,14 +278,6 @@ impl App {
             }
             WsEvent::Latency(ms) => {
                 self.latency_ms = Some(ms);
-            }
-            WsEvent::Error(msg) => {
-                self.connection_state = ConnectionState::Error;
-                self.error_message = Some(msg);
-                self.is_processing = false;
-                self.streaming_message_id = None;
-                self.pending_command = None;
-                self.command_response_buffer.clear();
             }
             WsEvent::Message(msg) => self.handle_server_message(msg),
         }
@@ -351,6 +339,12 @@ impl App {
                 self.add_system_message(&format!("⚠️  {}", data.message));
                 self.is_processing = false;
                 self.streaming_message_id = None;
+            }
+            ServerMessage::AbortComplete { data } => {
+                self.add_system_message(&format!("⏹  {}", data.message));
+                self.is_processing = false;
+                self.streaming_message_id = None;
+                self.aborted = true;
             }
             ServerMessage::Done { data } => {
                 if let Some(cmd) = self.pending_command.take() {
@@ -950,6 +944,14 @@ impl App {
             self.command_response_buffer.clear();
             ClientMessage::Prompt { message: text }
         };
+
+        // Only forward to the gateway when connected. Keep the typed input so
+        // the user can retry after reconnecting; drop the optimistic echo.
+        if self.connection_state != ConnectionState::Connected {
+            self.messages.pop();
+            self.add_system_message("Gateway not connected — message not sent");
+            return None;
+        }
 
         self.input_text.clear();
         self.command_popup = None;

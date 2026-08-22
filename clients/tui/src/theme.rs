@@ -4,15 +4,6 @@ use ratatui::style::Color;
 // Design Choice Enums — Structural UI changes beyond color palette
 // =============================================================================
 
-/// How user message blocks are visually distinguished
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MessageBlockStyle {
-    /// Full-width background block (current default)
-    FullBackground,
-    /// Left accent bar + subtle content tint (cleaner, more minimal)
-    AccentBar,
-}
-
 /// How popup/panel borders are treated
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BorderTreatment {
@@ -34,7 +25,6 @@ pub struct ThemeColors {
     pub system_header: Color,
 
     // Backgrounds
-    pub user_bg: Color,
     pub code_bg: Color,
     pub popup_bg: Color,
     pub picker_bg: Color,
@@ -56,9 +46,8 @@ pub struct ThemeColors {
     pub selected_fg: Color,
     pub selected_bg: Color,
 
-    // Block backgrounds (for subtle element differentiation)
-    pub thinking_bg: Color,
-    pub tool_bg: Color,
+    // Role chip text (on role-header-colored background)
+    pub chip_fg: Color,
 
     // Code blocks
     pub code_fg: Color,
@@ -85,10 +74,7 @@ pub struct ThemeColors {
 pub struct Theme {
     pub name: &'static str,
     pub colors: ThemeColors,
-    pub message_block: MessageBlockStyle,
     pub borders: BorderTreatment,
-    pub active_bar_char: &'static str,
-    pub input_prefix: &'static str,
 }
 
 impl Theme {
@@ -103,7 +89,6 @@ impl Theme {
                 assistant_header: Color::Rgb(138, 138, 149),
                 system_header: Color::Rgb(61, 143, 181),
 
-                user_bg: Color::Rgb(14, 14, 17),
                 code_bg: Color::Rgb(20, 20, 24),
                 popup_bg: Color::Rgb(8, 8, 10),
                 picker_bg: Color::Rgb(8, 8, 10),
@@ -119,11 +104,10 @@ impl Theme {
                 error_text: Color::Rgb(194, 59, 34),
                 thinking: Color::Rgb(120, 113, 108),
 
-                thinking_bg: Color::Rgb(14, 14, 17),
-                tool_bg: Color::Rgb(14, 14, 17),
-
                 selected_fg: Color::Rgb(10, 10, 12),
                 selected_bg: Color::Rgb(232, 168, 56),
+
+                chip_fg: Color::Rgb(10, 10, 12),
 
                 code_fg: Color::Rgb(212, 212, 216),
 
@@ -137,10 +121,7 @@ impl Theme {
                 input_fg: Color::Rgb(228, 228, 231),
                 input_placeholder: Color::Rgb(70, 70, 79),
             },
-            message_block: MessageBlockStyle::AccentBar,
             borders: BorderTreatment::Subtle,
-            active_bar_char: "▌",
-            input_prefix: "> ",
         }
     }
 
@@ -154,7 +135,6 @@ impl Theme {
                 assistant_header: Color::Green,
                 system_header: Color::Yellow,
 
-                user_bg: Color::Rgb(28, 28, 38),
                 code_bg: Color::Rgb(24, 24, 30),
                 popup_bg: Color::Rgb(30, 30, 40),
                 picker_bg: Color::Rgb(25, 25, 35),
@@ -170,11 +150,10 @@ impl Theme {
                 error_text: Color::Red,
                 thinking: Color::Magenta,
 
-                thinking_bg: Color::Rgb(30, 27, 36),
-                tool_bg: Color::Rgb(27, 28, 36),
-
                 selected_fg: Color::Black,
                 selected_bg: Color::Cyan,
+
+                chip_fg: Color::Black,
 
                 code_fg: Color::Green,
 
@@ -188,10 +167,7 @@ impl Theme {
                 input_fg: Color::White,
                 input_placeholder: Color::DarkGray,
             },
-            message_block: MessageBlockStyle::FullBackground,
             borders: BorderTreatment::Standard,
-            active_bar_char: "▌",
-            input_prefix: "> ",
         }
     }
 
@@ -207,7 +183,6 @@ impl Theme {
                 assistant_header: Color::Rgb(118, 148, 106), // green
                 system_header: Color::Rgb(228, 104, 77), // coral
 
-                user_bg: Color::Rgb(238, 233, 216), // slightly darker paper
                 code_bg: Color::Rgb(230, 224, 206), // darker paper
                 popup_bg: Color::Rgb(240, 235, 218), // warm popup bg
                 picker_bg: Color::Rgb(240, 235, 218),
@@ -223,11 +198,10 @@ impl Theme {
                 error_text: Color::Rgb(195, 64, 67),   // kanagawa red
                 thinking: Color::Rgb(149, 127, 184),   // kanagawa purple
 
-                thinking_bg: Color::Rgb(238, 233, 216), // slightly darker paper
-                tool_bg: Color::Rgb(235, 231, 210),     // slightly darker still
-
                 selected_fg: Color::Rgb(244, 240, 224), // paper
                 selected_bg: Color::Rgb(106, 149, 137), // cyan
+
+                chip_fg: Color::Rgb(30, 30, 46),
 
                 code_fg: Color::Rgb(118, 148, 106), // green
 
@@ -241,10 +215,7 @@ impl Theme {
                 input_fg: Color::Rgb(30, 30, 46),
                 input_placeholder: Color::Rgb(166, 160, 160),
             },
-            message_block: MessageBlockStyle::AccentBar,
             borders: BorderTreatment::Subtle,
-            active_bar_char: "│",
-            input_prefix: " ❯ ",
         }
     }
 

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::theme::{BorderTreatment, MessageBlockStyle, Theme};
+use crate::theme::{BorderTreatment, Theme};
 use crate::wrap::word_wrap_lines;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),    // Messages
-            Constraint::Length(3), // Input
+            Constraint::Length(2), // Input
             Constraint::Length(1), // Footer
         ])
         .split(area);
@@ -56,7 +56,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         ConnectionState::Disconnected => c.disconnected,
         ConnectionState::Connecting => c.connecting,
         ConnectionState::Connected => c.connected,
-        ConnectionState::Error => c.error_text,
     };
 
     let mut left_spans = Vec::new();
@@ -81,9 +80,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 "Connecting...",
                 Style::default().fg(c.connecting),
             ));
-        }
-        ConnectionState::Error => {
-            left_spans.push(Span::styled("Error", Style::default().fg(c.error_text)));
         }
     }
 
@@ -118,7 +114,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         right_spans.push(Span::styled("Esc:navigate", Style::default().fg(c.muted)));
     } else {
         right_spans.push(Span::styled(
-            "i:input ?:help q/Ctrl+D:quit",
+            "i:input ?:help Ctrl+C:quit",
             Style::default().fg(c.muted),
         ));
     }
@@ -353,81 +349,37 @@ fn build_message_lines(
     let mut lines = Vec::new();
     let mut item_line_offsets = Vec::new();
 
-    let user_bg = c.user_bg;
-    let timestamp_str = msg.timestamp.format(" %H:%M").to_string();
+    let timestamp_str = msg.timestamp.format("%H:%M").to_string();
 
-    // Header line (role + timestamp)
+    // Header line: role chip + dim timestamp, flush-left for every role
+    let (name, chip_color) = match msg.role {
+        MessageRole::User => ("You", c.user_header),
+        MessageRole::Assistant => ("Assistant", c.assistant_header),
+        MessageRole::System => ("System", c.system_header),
+    };
+    let mut header = vec![
+        // Pill: solid rounded caps + padded role text on the role color
+        Span::styled("▌", Style::default().fg(chip_color)),
+        Span::styled(
+            format!(" {} ", name),
+            Style::default()
+                .bg(chip_color)
+                .fg(c.chip_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("▐", Style::default().fg(chip_color)),
+        Span::raw(" "),
+        Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
+    ];
     // Streaming assistant: show spinner
     if msg.is_streaming && msg.role == MessageRole::Assistant {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Assistant",
-                Style::default()
-                    .fg(c.assistant_header)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
-            Span::raw(" "),
-            Span::styled(spinner.to_string(), Style::default().fg(c.connecting)),
-        ]));
-    } else if msg.role == MessageRole::User {
-        match theme.message_block {
-            MessageBlockStyle::FullBackground => {
-                // Full-width background for user messages (current default)
-                let used_width = unicode_width::UnicodeWidthStr::width("You")
-                    + unicode_width::UnicodeWidthStr::width(timestamp_str.as_str())
-                    + 1; // leading space
-                let pad_len = max_width.saturating_sub(used_width as u16);
-                lines.push(Line::from(vec![
-                    Span::styled(" ", Style::default().bg(user_bg)),
-                    Span::styled(
-                        "You",
-                        Style::default()
-                            .fg(c.user_header)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(user_bg),
-                    ),
-                    Span::styled(
-                        timestamp_str.clone(),
-                        Style::default().fg(c.muted).bg(user_bg),
-                    ),
-                    Span::styled(
-                        format!("{:<width$}", "", width = pad_len as usize),
-                        Style::default().bg(user_bg),
-                    ),
-                ]));
-            }
-            MessageBlockStyle::AccentBar => {
-                // Left accent bar + content with subtle bg
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{} ", theme.active_bar_char),
-                        Style::default().fg(c.accent),
-                    ),
-                    Span::styled(
-                        "You",
-                        Style::default()
-                            .fg(c.user_header)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
-                ]));
-            }
-        }
-    } else {
-        let (name, fg_color) = match msg.role {
-            MessageRole::Assistant => ("Assistant", c.assistant_header),
-            MessageRole::System => ("System", c.system_header),
-            MessageRole::User => unreachable!(), // handled above
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                name,
-                Style::default().fg(fg_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(timestamp_str.clone(), Style::default().fg(c.muted)),
-        ]));
+        header.push(Span::raw(" "));
+        header.push(Span::styled(
+            spinner.to_string(),
+            Style::default().fg(c.connecting),
+        ));
     }
+    lines.push(Line::from(header));
 
     // Content based on role
     match msg.role {
@@ -440,72 +392,24 @@ fn build_message_lines(
                     _ => None,
                 })
                 .collect();
-            match theme.message_block {
-                MessageBlockStyle::FullBackground => {
-                    for line in markdown_to_lines(
-                        &text,
-                        content_width,
-                        Style::default().fg(c.text).bg(user_bg),
-                        Style::default()
-                            .fg(c.system_header)
-                            .bg(user_bg)
-                            .add_modifier(Modifier::BOLD),
-                        theme,
-                    ) {
-                        let padded = pad_render_line(line, content_width);
-                        let spans = padded
-                            .spans
-                            .into_iter()
-                            .map(|span| {
-                                let style = span.style.bg(user_bg);
-                                Span::styled(span.content.into_owned(), style)
-                            })
-                            .collect::<Vec<_>>();
-                        let mut full_spans = vec![Span::styled(" ", Style::default().bg(user_bg))];
-                        full_spans.extend(spans);
-                        let current_width: usize = full_spans
-                            .iter()
-                            .map(|span| {
-                                span.content
-                                    .chars()
-                                    .map(|ch| ch.width().unwrap_or(0))
-                                    .sum::<usize>()
-                            })
-                            .sum();
-                        if current_width < max_width as usize {
-                            full_spans.push(Span::styled(
-                                " ".repeat(max_width as usize - current_width),
-                                Style::default().bg(user_bg),
-                            ));
-                        }
-                        lines.push(Line::from(full_spans));
-                    }
-                }
-                MessageBlockStyle::AccentBar => {
-                    for line in markdown_to_lines(
-                        &text,
-                        content_width,
-                        Style::default().fg(c.text),
-                        Style::default()
-                            .fg(c.system_header)
-                            .add_modifier(Modifier::BOLD),
-                        theme,
-                    ) {
-                        let padded = pad_render_line(line, content_width);
-                        let prefix = vec![Span::styled(
-                            format!("{} ", theme.active_bar_char),
-                            Style::default().fg(c.accent),
-                        )];
-                        let mut spans: Vec<Span<'static>> = prefix;
-                        spans.extend(
-                            padded
-                                .spans
-                                .into_iter()
-                                .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                        );
-                        lines.push(Line::from(spans));
-                    }
-                }
+            for line in markdown_to_lines(
+                &text,
+                content_width,
+                Style::default().fg(c.text),
+                Style::default()
+                    .fg(c.system_header)
+                    .add_modifier(Modifier::BOLD),
+                theme,
+            ) {
+                let padded = pad_render_line(line, content_width);
+                let mut spans = vec![Span::raw("  ")];
+                spans.extend(
+                    padded
+                        .spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                );
+                lines.push(Line::from(spans));
             }
         }
         MessageRole::System => {
@@ -540,13 +444,23 @@ fn build_message_lines(
                 item_line_offsets.push(lines.len());
                 match &msg.items[idx] {
                     ContentItem::Text(text) => {
-                        lines.extend(markdown_to_lines(
+                        for line in markdown_to_lines(
                             text,
                             content_width,
                             Style::default().fg(c.text),
                             Style::default().fg(c.accent).add_modifier(Modifier::BOLD),
                             theme,
-                        ));
+                        ) {
+                            let padded = pad_render_line(line, content_width);
+                            let mut spans = vec![Span::raw("  ")];
+                            spans.extend(
+                                padded
+                                    .spans
+                                    .into_iter()
+                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                            );
+                            lines.push(Line::from(spans));
+                        }
                         idx += 1;
                     }
                     ContentItem::Thinking {
@@ -565,42 +479,47 @@ fn build_message_lines(
                                 "Thinking..."
                             };
                             lines.push(Line::from(vec![
-                                Span::styled("  ", Style::default().bg(c.thinking_bg)),
+                                Span::raw("  "),
                                 Span::styled(
                                     label,
                                     Style::default()
                                         .fg(c.thinking)
-                                        .bg(c.thinking_bg)
-                                        .add_modifier(Modifier::BOLD),
+                                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
                                 ),
                             ]));
                             for line in wrap_text(content, content_width.saturating_sub(4)) {
                                 lines.push(Line::from(Span::styled(
                                     format!("    {}", line),
-                                    Style::default().fg(c.muted).bg(c.thinking_bg),
+                                    Style::default()
+                                        .fg(c.muted)
+                                        .add_modifier(Modifier::ITALIC),
                                 )));
                             }
                         } else if *is_complete {
                             // Thinking completed but hidden — compact notification
                             lines.push(Line::from(vec![
-                                Span::styled("  ", Style::default().bg(c.thinking_bg)),
+                                Span::raw("  "),
                                 Span::styled(
                                     "Thought process (hidden)",
-                                    Style::default().fg(c.thinking).bg(c.thinking_bg),
+                                    Style::default()
+                                        .fg(c.thinking)
+                                        .add_modifier(Modifier::ITALIC),
                                 ),
                             ]));
                         } else if msg.is_streaming {
                             // Active thinking, hidden — animated indicator
                             lines.push(Line::from(vec![
-                                Span::styled("  ", Style::default().bg(c.thinking_bg)),
+                                Span::raw("  "),
                                 Span::styled(
                                     spinner.to_string(),
-                                    Style::default().fg(c.connecting).bg(c.thinking_bg),
+                                    Style::default().fg(c.connecting),
                                 ),
                                 Span::raw(" "),
                                 Span::styled(
                                     "Thinking…",
-                                    Style::default().fg(c.thinking).bg(c.thinking_bg),
+                                    Style::default()
+                                        .fg(c.thinking)
+                                        .add_modifier(Modifier::ITALIC),
                                 ),
                             ]));
                         }
@@ -627,6 +546,17 @@ fn build_message_lines(
                             c.tool_output
                         };
 
+                        // Status glyph: spinner while running, dot when done, cross on error
+                        let (glyph, glyph_color) = if *is_error {
+                            ("✗", c.tool_error)
+                        } else if *is_complete || result.is_some() {
+                            ("◌", c.muted)
+                        } else if msg.is_streaming {
+                            (spinner, c.connecting)
+                        } else {
+                            ("◌", c.muted)
+                        };
+
                         // Spacing before tool block
                         lines.push(Line::from(""));
 
@@ -634,71 +564,58 @@ fn build_message_lines(
                         let stripped = preview
                             .strip_prefix(&format!("{} ", name))
                             .unwrap_or(&preview);
-                        let status = if show_tools {
-                            ""
-                        } else if *is_complete || result.is_some() {
-                            "  collapsed"
-                        } else {
-                            "  running"
-                        };
-                        lines.push(pad_render_line_with_style(
-                            Line::from(vec![
-                                Span::styled(
-                                    format!("  {}  ", name),
-                                    Style::default()
-                                        .fg(c.tool_name)
-                                        .bg(c.tool_bg)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(
-                                    stripped.to_string(),
-                                    Style::default()
-                                        .fg(c.text)
-                                        .bg(c.tool_bg)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(status, Style::default().fg(c.muted).bg(c.tool_bg)),
-                            ]),
-                            max_width,
-                            Style::default().bg(c.tool_bg),
-                        ));
+
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(glyph.to_string(), Style::default().fg(glyph_color)),
+                            Span::raw(" "),
+                            Span::styled(
+                                name.clone(),
+                                Style::default()
+                                    .fg(c.tool_name)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw("  "),
+                            Span::styled(
+                                stripped.to_string(),
+                                Style::default().fg(c.text),
+                            ),
+                        ]));
 
                         // Output (live-updated inline)
                         if show_tools {
                             if let Some(content) = result {
-                                let wrapped = wrap_text(content, content_width.saturating_sub(8));
+                                let wrapped = wrap_text(content, content_width.saturating_sub(6));
                                 let max_lines = 10;
                                 for line in wrapped.iter().take(max_lines) {
-                                    lines.push(pad_render_line_with_style(
-                                        Line::from(Span::styled(
-                                            format!("      {}", line),
-                                            Style::default().fg(body_color).bg(c.tool_bg),
-                                        )),
-                                        max_width,
-                                        Style::default().bg(c.tool_bg),
-                                    ));
+                                    lines.push(Line::from(Span::styled(
+                                        format!("      {}", line),
+                                        Style::default().fg(body_color),
+                                    )));
                                 }
                                 if wrapped.len() > max_lines {
-                                    lines.push(pad_render_line_with_style(
-                                        Line::from(Span::styled(
-                                            "      ... (truncated)".to_string(),
-                                            Style::default().fg(c.muted).bg(c.tool_bg),
-                                        )),
-                                        max_width,
-                                        Style::default().bg(c.tool_bg),
-                                    ));
+                                    lines.push(Line::from(Span::styled(
+                                        "      ... (truncated)".to_string(),
+                                        Style::default().fg(c.muted),
+                                    )));
                                 }
                             } else if msg.is_streaming && !*is_complete {
                                 // Still running — show a subtle spinner hint
-                                lines.push(pad_render_line_with_style(
-                                    Line::from(Span::styled(
-                                        "      …".to_string(),
-                                        Style::default().fg(c.muted).bg(c.tool_bg),
-                                    )),
-                                    max_width,
-                                    Style::default().bg(c.tool_bg),
-                                ));
+                                lines.push(Line::from(Span::styled(
+                                    "      …".to_string(),
+                                    Style::default().fg(c.muted),
+                                )));
                             }
+                        } else {
+                            let status = if *is_complete || result.is_some() {
+                                "collapsed"
+                            } else {
+                                "running"
+                            };
+                            lines.push(Line::from(Span::styled(
+                                format!("      {}", status),
+                                Style::default().fg(c.muted),
+                            )));
                         }
 
                         idx += 1;
@@ -717,44 +634,42 @@ fn build_message_lines(
                         };
 
                         lines.push(Line::from(""));
-                        lines.push(pad_render_line_with_style(
-                            Line::from(Span::styled(
-                                format!(
-                                    "  {}{}",
-                                    tool_name,
-                                    if show_tools { "" } else { "  collapsed" }
-                                ),
+                        let (glyph, glyph_color) = if *is_error {
+                            ("✗", c.tool_error)
+                        } else {
+                            ("◌", c.muted)
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(glyph.to_string(), Style::default().fg(glyph_color)),
+                            Span::raw(" "),
+                            Span::styled(
+                                tool_name.clone(),
                                 Style::default()
-                                    .fg(c.text)
-                                    .bg(c.tool_bg)
+                                    .fg(c.tool_name)
                                     .add_modifier(Modifier::BOLD),
-                            )),
-                            max_width,
-                            Style::default().bg(c.tool_bg),
-                        ));
+                            ),
+                        ]));
                         if show_tools {
-                            let wrapped = wrap_text(content, content_width.saturating_sub(8));
+                            let wrapped = wrap_text(content, content_width.saturating_sub(6));
                             let max_lines = 10;
                             for line in wrapped.iter().take(max_lines) {
-                                lines.push(pad_render_line_with_style(
-                                    Line::from(Span::styled(
-                                        format!("      {}", line),
-                                        Style::default().fg(body_color).bg(c.tool_bg),
-                                    )),
-                                    max_width,
-                                    Style::default().bg(c.tool_bg),
-                                ));
+                                lines.push(Line::from(Span::styled(
+                                    format!("      {}", line),
+                                    Style::default().fg(body_color),
+                                )));
                             }
                             if wrapped.len() > max_lines {
-                                lines.push(pad_render_line_with_style(
-                                    Line::from(Span::styled(
-                                        "      ... (truncated)".to_string(),
-                                        Style::default().fg(c.muted).bg(c.tool_bg),
-                                    )),
-                                    max_width,
-                                    Style::default().bg(c.tool_bg),
-                                ));
+                                lines.push(Line::from(Span::styled(
+                                    "      ... (truncated)".to_string(),
+                                    Style::default().fg(c.muted),
+                                )));
                             }
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                "      collapsed".to_string(),
+                                Style::default().fg(c.muted),
+                            )));
                         }
                         idx += 1;
                     }
@@ -808,17 +723,7 @@ fn build_message_lines(
     }
 
     // Blank line after message for spacing
-    match theme.message_block {
-        MessageBlockStyle::FullBackground if msg.role == MessageRole::User => {
-            lines.push(Line::from(Span::styled(
-                format!("{:<width$}", "", width = max_width as usize),
-                Style::default().bg(user_bg),
-            )));
-        }
-        _ => {
-            lines.push(Line::from(""));
-        }
-    }
+    lines.push(Line::from(""));
 
     let result: Vec<Line<'static>> = lines
         .into_iter()
@@ -897,33 +802,19 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(c.input_fg)
     };
 
-    let prefix = if app.is_processing {
-        format!("{} ", app.spinner_char())
-    } else {
-        app.theme.input_prefix.to_string()
-    };
-
-    // Hint shown right-aligned on the input row (empty while processing — footer handles it)
-    let (hint, hint_style): (&str, Style) = ("", Style::default());
-
-    let hint_width = hint.width() as u16;
-    let _prefix_width = prefix.width() as u16;
-
-    // Text area: left portion of the input row (hint takes the right)
-    let gap = if hint_width > 0 { 1 } else { 0 }; // 1-col gap between text and hint
-    let text_width = inner.width.saturating_sub(hint_width + gap);
+    // Text area: full width of the input row (no prefix)
     let text_area = Rect {
         x: inner.x,
-        y: inner.y + 1, // leave top line as separator
-        width: text_width,
-        height: inner.height.saturating_sub(1),
+        y: inner.y,
+        width: inner.width,
+        height: inner.height,
     };
 
     // Word-wrap for cursor positioning (matches ratatui's WordWrapper behavior)
-    let line_width = text_width as usize;
+    let line_width = text_area.width as usize;
     let visible_lines = text_area.height as usize;
 
-    let wrapped = word_wrap_lines(&format!("{}{}", prefix, input_text), line_width);
+    let wrapped = word_wrap_lines(input_text, line_width);
     let total_lines = wrapped.len().max(1);
     let scroll = if total_lines > visible_lines {
         (total_lines - visible_lines) as u16
@@ -932,8 +823,7 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Render with ratatui's built-in word wrapping
-    let full_text = format!("{}{}", prefix, input_text);
-    let input = Paragraph::new(full_text)
+    let input = Paragraph::new(input_text)
         .style(style)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
@@ -944,23 +834,13 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     let cursor_row = wrapped.len().saturating_sub(1);
     let cursor_col = wrapped.last().map(|l| l.width()).unwrap_or(0);
 
-    // Render hint on the right side of the input row
-    let hint_area = Rect {
-        x: inner.x + inner.width.saturating_sub(hint_width),
-        y: inner.y + 1,
-        width: hint_width,
-        height: 1,
-    };
-    let hint_widget = Paragraph::new(hint).style(hint_style);
-    frame.render_widget(hint_widget, hint_area);
-
     // Cursor position — account for wrapping and scroll offset
     if app.is_input_focused && !app.is_processing {
         let visible_row = cursor_row.saturating_sub(scroll as usize);
         if visible_row < text_area.height as usize {
             frame.set_cursor_position((
-                inner.x + (cursor_col as u16).min(text_width.saturating_sub(1)),
-                inner.y + 1 + visible_row as u16,
+                inner.x + (cursor_col as u16).min(text_area.width.saturating_sub(1)),
+                inner.y + visible_row as u16,
             ));
         }
     }
@@ -992,13 +872,12 @@ Navigation Mode
   t             Toggle thinking
   y             Copy last message
   ?             Toggle help
-  q             Quit
 
 Global
   Esc          Abort generation
   Ctrl+O       Collapse/expand tools
   Ctrl+T       Show/hide thinking
-  Ctrl+C        Quit
+  Ctrl+C       Quit
 
 Commands
   /status       Show gateway status
@@ -1383,6 +1262,11 @@ fn wrap_styled_spans(
                     current_width += prefix.width();
                     current.push(Span::raw(prefix.clone()));
                 }
+                // The wrapping space (or other whitespace) that triggered the
+                // break must not become a stray leading space on the next line.
+                if ch.is_whitespace() {
+                    continue;
+                }
             } else if current_width + ch_width > width && current.is_empty() {
                 lines.push(Line::from(""));
             }
@@ -1418,31 +1302,6 @@ fn pad_render_line(mut line: Line<'static>, width: u16) -> Line<'static> {
     if current_width < target_width {
         line.spans
             .push(Span::raw(" ".repeat(target_width - current_width)));
-    }
-    line
-}
-
-fn pad_render_line_with_style(
-    mut line: Line<'static>,
-    width: u16,
-    pad_style: Style,
-) -> Line<'static> {
-    let current_width: usize = line
-        .spans
-        .iter()
-        .map(|span| {
-            span.content
-                .chars()
-                .map(|ch| ch.width().unwrap_or(0))
-                .sum::<usize>()
-        })
-        .sum();
-    let target_width = width as usize;
-    if current_width < target_width {
-        line.spans.push(Span::styled(
-            " ".repeat(target_width - current_width),
-            pad_style,
-        ));
     }
     line
 }

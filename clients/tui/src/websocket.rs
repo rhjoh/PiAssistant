@@ -16,7 +16,6 @@ pub enum WsEvent {
     Disconnected,
     Message(ServerMessage),
     Latency(u64), // milliseconds
-    Error(String),
 }
 
 #[allow(dead_code)]
@@ -27,7 +26,6 @@ pub struct WebSocketClient {
     #[allow(dead_code)]
     cmd_tx: UnboundedSender<ClientMessage>,
     reconnect_attempts: u32,
-    max_reconnect_attempts: u32,
 }
 
 impl WebSocketClient {
@@ -48,7 +46,6 @@ impl WebSocketClient {
             cmd_rx,
             cmd_tx: cmd_tx.clone(),
             reconnect_attempts: 0,
-            max_reconnect_attempts: 10,
         };
 
         (client, event_rx, cmd_tx)
@@ -62,6 +59,8 @@ impl WebSocketClient {
     pub async fn run(mut self) {
         info!("WebSocket client starting: {}", self.url);
 
+        // Retry forever. The TUI stays usable while the gateway is down and
+        // resumes automatically when it comes back.
         loop {
             match self.connect_and_run().await {
                 Ok(()) => {
@@ -74,13 +73,7 @@ impl WebSocketClient {
             }
 
             self.reconnect_attempts += 1;
-            if self.reconnect_attempts > self.max_reconnect_attempts {
-                let _ = self
-                    .event_tx
-                    .send(WsEvent::Error("Max reconnect attempts reached".to_string()));
-                break;
-            }
-
+            // Exponential backoff capped at ~64s.
             let delay = Duration::from_secs((2_u64).pow(self.reconnect_attempts.min(6)));
             info!(
                 "Reconnecting in {:?} (attempt {})",
@@ -88,8 +81,6 @@ impl WebSocketClient {
             );
             tokio::time::sleep(delay).await;
         }
-
-        info!("WebSocket client stopped");
     }
 
     async fn connect_and_run(&mut self) -> Result<()> {

@@ -25,6 +25,11 @@ DerivedData/
 # Rust client build artifacts
 clients/**/target/
 
+# TUI generated docs
+clients/tui/IMPLEMENTATION.md
+clients/tui/README.md
+clients/tui/ROADMAP.md
+
 # Runtime artifacts
 *.pid
 *.log

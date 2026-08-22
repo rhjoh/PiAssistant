@@ -2,7 +2,6 @@
 name = "assistant-tui"
 version = "0.1.0"
 edition = "2021"
-authors = ["Rhys Johnston"]
 description = "Terminal UI client for the Personal Assistant Gateway"
 
 [dependencies]

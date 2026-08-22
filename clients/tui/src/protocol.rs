@@ -73,6 +73,10 @@ pub enum ServerMessage {
     Image { data: ImageData },
     #[serde(rename = "error")]
     Error { data: ErrorData },
+    #[serde(rename = "prompt_accepted")]
+    PromptAccepted { data: serde_json::Value },
+    #[serde(rename = "abort_complete")]
+    AbortComplete { data: AbortCompleteData },
     #[serde(rename = "done")]
     Done { data: DoneData },
     #[serde(rename = "usage")]
@@ -89,6 +93,11 @@ pub enum ServerMessage {
     Pong { data: PongData },
     #[serde(rename = "proactive")]
     Proactive { data: ProactiveData },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AbortCompleteData {
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

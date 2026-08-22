@@ -134,11 +134,7 @@ async fn main() -> Result<()> {
     let ws_handle = tokio::spawn(ws_client.run());
 
     // Request initial state, history, and model list
-    let _ = ws_tx.send(protocol::ClientMessage::GetState);
-    let _ = ws_tx.send(protocol::ClientMessage::GetModels);
-    // Request a larger window because recent session history can be dominated
-    // by heartbeat/internal turns that the TUI intentionally filters out.
-    let _ = ws_tx.send(protocol::ClientMessage::GetHistory { limit: Some(1000) });
+    request_gateway_state(&ws_tx);
 
     // Run main loop — if ctrl+c or shutdown signal fires, exit gracefully
     let res = run_app(&mut terminal, &mut app, &ws_tx, &mut ws_rx).await;
@@ -156,6 +152,27 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Request state, models, and a recent-history window from the gateway.
+/// Called at startup and again after every (re)connect so the view is never stale.
+fn request_gateway_state(ws_tx: &tokio::sync::mpsc::UnboundedSender<protocol::ClientMessage>) {
+    let _ = ws_tx.send(protocol::ClientMessage::GetState);
+    let _ = ws_tx.send(protocol::ClientMessage::GetModels);
+    // Request a larger window because recent session history can be dominated
+    // by heartbeat/internal turns that the TUI intentionally filters out.
+    let _ = ws_tx.send(protocol::ClientMessage::GetHistory { limit: Some(1000) });
+}
+
+/// Send a client message, surfacing delivery failures as a visible system message.
+fn send_message(
+    app: &mut App,
+    ws_tx: &tokio::sync::mpsc::UnboundedSender<protocol::ClientMessage>,
+    msg: protocol::ClientMessage,
+) {
+    if let Err(e) = ws_tx.send(msg) {
+        app.add_system_message(&format!("Failed to reach gateway: {}", e));
+    }
 }
 
 async fn run_app<B: Backend>(
@@ -211,6 +228,11 @@ where
             event = ws_rx.recv() => {
                 match event {
                     Some(ev) => {
+                        if matches!(ev, WsEvent::Connected) {
+                            // Re-sync after a reconnect so state/models/history
+                            // reflect the gateway's current session.
+                            request_gateway_state(ws_tx);
+                        }
                         app.handle_event(ev);
                         let _ = apply_pending_scroll(app);
                         terminal.draw(|f| ui::render(f, app))?;
@@ -339,7 +361,7 @@ async fn handle_key(
             if app.is_processing {
                 info!("Esc pressed — aborting generation");
                 if let Some(msg) = app.abort() {
-                    let _ = ws_tx.send(msg);
+                    send_message(app, ws_tx, msg);
                 }
                 return Ok(false);
             }
@@ -374,7 +396,7 @@ async fn handle_key(
             }
             Enter => {
                 if let Some(msg) = app.accept_model_selection() {
-                    let _ = ws_tx.send(msg);
+                    send_message(app, ws_tx, msg);
                 }
             }
             Up | Char('k') => {
@@ -435,7 +457,7 @@ async fn handle_key(
         match key.code {
             Enter => {
                 if let Some(msg) = app.submit_message() {
-                    let _ = ws_tx.send(msg);
+                    send_message(app, ws_tx, msg);
                 }
             }
             Backspace => {
