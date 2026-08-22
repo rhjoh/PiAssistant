@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { StatusBar } from '@/components/StatusBar';
-import { Sidebar } from '@/components/Sidebar';
+import { Sidebar, type SidebarView } from '@/components/Sidebar';
 import { MessageFeed } from '@/components/MessageFeed';
 import { InputArea } from '@/components/InputArea';
 import { DebugPanel } from '@/components/DebugPanel';
 import { TelemetryPanel } from '@/components/TelemetryPanel';
+import { TasksPage } from '@/components/TasksPage';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { ChatMessage, WSMessage, SessionStats, MessageContent, TokenUsage, ModelInfo, UploadImage } from '@/types';
 import { useTheme } from '@/hooks/useTheme';
@@ -96,6 +97,15 @@ function findLatestStreamingAssistantId(messages: ChatMessage[]): string | null 
   return null;
 }
 
+function createTurnId(): string {
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getTurnId(msg: WSMessage): string | undefined {
+  const data = msg.data as { turnId?: unknown } | undefined;
+  return typeof data?.turnId === 'string' && data.turnId.trim() ? data.turnId : undefined;
+}
+
 function findThinkingIndex(contents: MessageContent[], thinkingId: string): number {
   for (let i = contents.length - 1; i >= 0; i--) {
     const item = contents[i];
@@ -111,6 +121,7 @@ export default function App() {
   const isFoundry = theme.startsWith('foundry');
 
   const [sessionId] = useState(() => generateSessionId());
+  const [view, setView] = useState<SidebarView>('chat');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [debugMessages, setDebugMessages] = useState<Array<{type: string; timestamp: number; data?: unknown}>>([]);
@@ -120,9 +131,52 @@ export default function App() {
   const [contextWindow, setContextWindow] = useState<number | undefined>();
   const [cumulativeUsage, setCumulativeUsage] = useState<SessionStats['currentContextTokens'] | undefined>();
   const streamingIdRef = useRef<string | null>(null);
+  const turnMessageIdsRef = useRef<Map<string, string>>(new Map());
   const skippedHeartbeatRef = useRef<boolean>(false);
   const hasHydratedHistoryRef = useRef<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const ensureAssistantTarget = useCallback((
+    prev: ChatMessage[],
+    turnId: string | undefined,
+    initialContent: MessageContent[] = []
+  ): { messages: ChatMessage[]; targetId: string; created: boolean } => {
+    let targetId = turnId ? turnMessageIdsRef.current.get(turnId) ?? null : streamingIdRef.current;
+    let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
+
+    if ((!targetId || !targetMsg) && turnId) {
+      targetMsg = prev.find(m => m.role === 'assistant' && m.turnId === turnId) ?? null;
+      targetId = targetMsg?.id ?? null;
+      if (targetId) turnMessageIdsRef.current.set(turnId, targetId);
+    }
+
+    if ((!targetId || !targetMsg) && !turnId) {
+      targetId = findLatestStreamingAssistantId(prev);
+      targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
+    }
+
+    if (targetId && targetMsg) {
+      streamingIdRef.current = targetId;
+      if (turnId) turnMessageIdsRef.current.set(turnId, targetId);
+      return { messages: prev, targetId, created: false };
+    }
+
+    const newId = `ai-${Date.now()}-stream`;
+    streamingIdRef.current = newId;
+    if (turnId) turnMessageIdsRef.current.set(turnId, newId);
+    return {
+      messages: [...prev, {
+        id: newId,
+        role: 'assistant' as const,
+        content: initialContent,
+        turnId,
+        isStreaming: true,
+        timestamp: Date.now()
+      }],
+      targetId: newId,
+      created: true,
+    };
+  }, []);
 
   const handleMessage = useCallback((msg: WSMessage) => {
     setDebugMessages(prev => [...prev.slice(-49), { 
@@ -363,6 +417,12 @@ export default function App() {
 
           // Rebind stream target after hydration/merge to avoid stale refs.
           streamingIdRef.current = findLatestStreamingAssistantId(next);
+          turnMessageIdsRef.current.clear();
+          for (const message of next) {
+            if (message.role === 'assistant' && message.turnId) {
+              turnMessageIdsRef.current.set(message.turnId, message.id);
+            }
+          }
           setIsProcessing(streamingIdRef.current !== null);
           return next;
         });
@@ -370,6 +430,7 @@ export default function App() {
       }
 
       case 'text_delta': {
+        const turnId = getTurnId(msg);
         const content = (msg.data as { content: string }).content;
 
         // Skip heartbeat response content entirely
@@ -398,24 +459,15 @@ export default function App() {
         }
 
         setMessages(prev => {
-          let targetId = streamingIdRef.current;
-          let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-
-          // No streaming message found - create one
-          if (!targetMsg) {
-            const newId = `ai-${Date.now()}-stream`;
-            streamingIdRef.current = newId;
-            return [...prev, {
-              id: newId,
-              role: 'assistant' as const,
-              content: [{ type: 'text' as const, content }],
-              isStreaming: true,
-              timestamp: Date.now()
-            }];
-          }
+          const { messages: next, targetId, created } = ensureAssistantTarget(
+            prev,
+            turnId,
+            [{ type: 'text' as const, content }]
+          );
+          if (created) return next;
 
           // Update existing message
-          return prev.map(m => {
+          return next.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
             const lastIdx = contents.length - 1;
@@ -435,6 +487,7 @@ export default function App() {
       }
 
       case 'thinking_delta': {
+        const turnId = getTurnId(msg);
         const { content, thinkingId, seq } = msg.data as { content: string; thinkingId: string; seq: number };
 
         // Skip heartbeat response content entirely
@@ -451,24 +504,15 @@ export default function App() {
         setIsProcessing(true);
 
         setMessages(prev => {
-          let targetId = streamingIdRef.current;
-          let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          // No streaming message found - create one
-          if (!targetMsg) {
-            const newId = `ai-${Date.now()}-stream`;
-            streamingIdRef.current = newId;
-            return [...prev, {
-              id: newId,
-              role: 'assistant' as const,
-              content: [{ type: 'thinking' as const, content, thinkingId, seq }],
-              isStreaming: true,
-              timestamp: Date.now()
-            }];
-          }
+          const { messages: next, targetId, created } = ensureAssistantTarget(
+            prev,
+            turnId,
+            [{ type: 'thinking' as const, content, thinkingId, seq }]
+          );
+          if (created) return next;
           
           // Update existing message
-          return prev.map(m => {
+          return next.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
             const existingIdx = findThinkingIndex(contents, thinkingId);
@@ -490,9 +534,12 @@ export default function App() {
       }
 
       case 'thinking_done': {
+        const turnId = getTurnId(msg);
         const { content, thinkingId, seq } = msg.data as { content: string; thinkingId: string; seq: number };
-        setMessages(prev => prev.map(m => {
-          if (m.id !== streamingIdRef.current) return m;
+        setMessages(prev => {
+          const { messages: next, targetId } = ensureAssistantTarget(prev, turnId);
+          return next.map(m => {
+          if (m.id !== targetId) return m;
           const contents = Array.isArray(m.content) ? m.content : [];
           const existingIdx = findThinkingIndex(contents, thinkingId);
           if (existingIdx < 0) {
@@ -506,38 +553,28 @@ export default function App() {
               ...contents.slice(existingIdx + 1)
             ]
           };
-        }));
+          });
+        });
         // Keep processing state during tool calls
         break;
       }
 
       case 'tool_start': {
+        const turnId = getTurnId(msg);
         const data = msg.data as { toolCallId: string; toolName: string; args?: unknown };
         
         setMessages(prev => {
-          let targetId = streamingIdRef.current;
-          let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          // No streaming message found - create one
-          if (!targetMsg) {
-            const newId = `ai-${Date.now()}-stream`;
-            streamingIdRef.current = newId;
-            return [...prev, {
-              id: newId,
-              role: 'assistant' as const,
-              content: [{
+          const initialContent: MessageContent[] = [{
                 type: 'tool_call' as const,
                 id: data.toolCallId,
                 name: data.toolName,
                 args: typeof data.args === 'object' && data.args !== null ? data.args as Record<string, unknown> : undefined
-              }],
-              isStreaming: true,
-              timestamp: Date.now()
-            }];
-          }
+              }];
+          const { messages: next, targetId, created } = ensureAssistantTarget(prev, turnId, initialContent);
+          if (created) return next;
           
           // Update existing message
-          return prev.map(m => {
+          return next.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
             return {
@@ -555,28 +592,20 @@ export default function App() {
       }
 
       case 'tool_output': {
+        const turnId = getTurnId(msg);
         const data = msg.data as { toolCallId: string; output: string; truncated?: boolean };
         const resultContent = data.truncated ? data.output + '\n... (truncated)' : data.output;
         
         setMessages(prev => {
-          let targetId = streamingIdRef.current;
-          let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
-          
-          // No streaming message found - create one
-          if (!targetMsg) {
-            const newId = `ai-${Date.now()}-stream`;
-            streamingIdRef.current = newId;
-            return [...prev, {
-              id: newId,
-              role: 'assistant' as const,
-              content: [{ type: 'tool_result' as const, toolCallId: data.toolCallId, content: resultContent }],
-              isStreaming: true,
-              timestamp: Date.now()
-            }];
-          }
+          const { messages: next, targetId, created } = ensureAssistantTarget(
+            prev,
+            turnId,
+            [{ type: 'tool_result' as const, toolCallId: data.toolCallId, content: resultContent }]
+          );
+          if (created) return next;
           
           // Update existing message
-          return prev.map(m => {
+          return next.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
             const existingIdx = contents.findIndex(c => c.type === 'tool_result' && (c as {toolCallId: string}).toolCallId === data.toolCallId);
@@ -601,27 +630,20 @@ export default function App() {
       }
 
       case 'image': {
+        const turnId = getTurnId(msg);
         const data = msg.data as { source: string; alt?: string };
         const imageUrl = imageSourceToUrl(data.source);
         if (!imageUrl) break;
 
         setMessages(prev => {
-          let targetId = streamingIdRef.current;
-          let targetMsg = targetId ? prev.find(m => m.id === targetId) : null;
+          const { messages: next, targetId, created } = ensureAssistantTarget(
+            prev,
+            turnId,
+            [{ type: 'image' as const, url: imageUrl, alt: data.alt }]
+          );
+          if (created) return next;
 
-          if (!targetMsg || !targetId) {
-            const newId = `ai-${Date.now()}-stream`;
-            streamingIdRef.current = newId;
-            return [...prev, {
-              id: newId,
-              role: 'assistant' as const,
-              content: [{ type: 'image' as const, url: imageUrl, alt: data.alt }],
-              isStreaming: true,
-              timestamp: Date.now(),
-            }];
-          }
-
-          return prev.map(m => {
+          return next.map(m => {
             if (m.id !== targetId) return m;
             const contents = Array.isArray(m.content) ? m.content : [];
             return {
@@ -634,6 +656,7 @@ export default function App() {
       }
 
       case 'done': {
+        const turnId = getTurnId(msg);
         setIsProcessing(false);
         const doneData = msg.data as {
           finalText?: string;
@@ -656,19 +679,21 @@ export default function App() {
 
         const finalText = doneData?.finalText?.trim();
         const normalizedFinalText = finalText?.replace(/^`+|`+$/g, '');
-        let currentId = streamingIdRef.current;
-        if (currentId) {
+        let currentId = turnId ? turnMessageIdsRef.current.get(turnId) ?? null : streamingIdRef.current;
+        if (currentId || turnId) {
           setMessages(prev => {
-            const activeExists = prev.some(m => m.id === currentId && m.role === 'assistant' && m.isStreaming);
+            const targetId = currentId ?? (turnId ? prev.find(m => m.role === 'assistant' && m.turnId === turnId)?.id : null);
+            if (!targetId) return prev;
+            const activeExists = prev.some(m => m.id === targetId && m.role === 'assistant' && m.isStreaming);
             if (!activeExists) return prev;
 
-            const targetMsg = prev.find(m => m.id === currentId);
+            const targetMsg = prev.find(m => m.id === targetId);
             // Filter out heartbeat responses
             if ((targetMsg && isHeartbeatMessage(targetMsg.content)) || (normalizedFinalText && isHeartbeatMessage(normalizedFinalText))) {
-              return prev.filter(m => m.id !== currentId);
+              return prev.filter(m => m.id !== targetId);
             }
             return prev.map(m =>
-              m.id === currentId
+              m.id === targetId
                 ? (() => {
                     const currentContent = Array.isArray(m.content) ? m.content : [];
 
@@ -690,6 +715,7 @@ export default function App() {
                 : m
             );
           });
+          if (turnId) turnMessageIdsRef.current.delete(turnId);
           streamingIdRef.current = null;
         } else {
           if (normalizedFinalText) {
@@ -704,7 +730,7 @@ export default function App() {
           }
         }
         // Reset heartbeat skip flag after processing done
-        streamingIdRef.current = null;
+        if (!turnId) streamingIdRef.current = null;
         skippedHeartbeatRef.current = false;
         break;
       }
@@ -713,11 +739,27 @@ export default function App() {
         const errorMsg = (msg.data as { message: string }).message;
         setIsProcessing(false);
         streamingIdRef.current = null;
+        turnMessageIdsRef.current.clear();
         skippedHeartbeatRef.current = false;
         setMessages(prev => [...prev, {
           id: `sys-${Date.now()}`,
           role: 'system',
           content: `ERROR: ${errorMsg}`,
+          timestamp: Date.now()
+        }]);
+        break;
+      }
+
+      case 'abort_complete': {
+        const abortMsg = (msg.data as { message: string }).message;
+        setIsProcessing(false);
+        streamingIdRef.current = null;
+        turnMessageIdsRef.current.clear();
+        skippedHeartbeatRef.current = false;
+        setMessages(prev => [...prev, {
+          id: `sys-${Date.now()}`,
+          role: 'system',
+          content: `⏹ ${abortMsg}`,
           timestamp: Date.now()
         }]);
         break;
@@ -738,6 +780,7 @@ export default function App() {
       }
 
       case 'user_message': {
+        const turnId = getTurnId(msg);
         const userData = msg.data as { content: string; source: string };
 
         // Skip heartbeat messages
@@ -752,6 +795,7 @@ export default function App() {
         
         // Set streaming ID BEFORE state update to catch any early deltas
         streamingIdRef.current = aiMsgId;
+        if (turnId) turnMessageIdsRef.current.set(turnId, aiMsgId);
         setIsProcessing(true);
         
         // Single atomic update for both user message and assistant placeholder
@@ -760,12 +804,14 @@ export default function App() {
             id: userMsgId,
             role: 'user',
             content: userData.content,
+            turnId,
             timestamp: Date.now()
           },
           {
             id: aiMsgId,
             role: 'assistant',
             content: [],
+            turnId,
             isStreaming: true,
             timestamp: Date.now()
           }
@@ -790,7 +836,7 @@ export default function App() {
         break;
       }
     }
-  }, []);
+  }, [ensureAssistantTarget]);
 
   const { isConnected, latency, send } = useWebSocket({
     url: WS_URL,
@@ -803,6 +849,7 @@ export default function App() {
     onDisconnect: () => {
       setIsProcessing(false);
       streamingIdRef.current = null;
+      turnMessageIdsRef.current.clear();
     },
   });
 
@@ -823,6 +870,7 @@ export default function App() {
 
     if (text === '/clear') {
       setMessages([]);
+      turnMessageIdsRef.current.clear();
       hasHydratedHistoryRef.current = false;
       return;
     }
@@ -831,6 +879,7 @@ export default function App() {
       send({ type: 'command', command: 'new', args: [] });
       setMessages([]);
       streamingIdRef.current = null;
+      turnMessageIdsRef.current.clear();
       skippedHeartbeatRef.current = false;
       hasHydratedHistoryRef.current = false;
       setIsProcessing(false);
@@ -839,8 +888,11 @@ export default function App() {
 
     const userMsgId = `usr-${Date.now()}`;
     const aiMsgId = `ai-${Date.now()}-stream`;
+    const isCommand = text.startsWith('/');
+    const turnId = isCommand ? undefined : createTurnId();
 
     streamingIdRef.current = aiMsgId;
+    if (turnId) turnMessageIdsRef.current.set(turnId, aiMsgId);
     setIsProcessing(true);
 
     // Atomic insert avoids race windows where deltas can arrive between separate updates.
@@ -850,18 +902,20 @@ export default function App() {
         role: 'user',
         content: text,
         images: images?.map((img) => img.dataUrl),
+        turnId,
         timestamp: Date.now()
       },
       {
         id: aiMsgId,
         role: 'assistant',
         content: [],
+        turnId,
         isStreaming: true,
         timestamp: Date.now()
       }
     ]);
 
-    if (text.startsWith('/')) {
+    if (isCommand) {
       const parts = text.slice(1).split(' ');
       send({
         type: 'command',
@@ -878,11 +932,13 @@ export default function App() {
           type: 'prompt_with_images',
           message: text,
           images: attachments,
+          id: turnId,
         });
       } else {
         send({
           type: 'prompt',
           message: text,
+          id: turnId,
         });
       }
     }
@@ -968,17 +1024,25 @@ export default function App() {
           disabled={isProcessing}
           isProcessing={isProcessing}
           isConnected={isConnected}
+          activeView={view}
+          onNavigate={setView}
         />
         <div className="flex flex-1 flex-col min-w-0">
-          <MessageFeed messages={messages} />
-          
-          <InputArea 
-            onSend={handleSend}
-            onAbort={handleAbort}
-            isProcessing={isProcessing}
-            disabled={!isConnected}
-            textareaRef={textareaRef}
-          />
+          {view === 'tasks' ? (
+            <TasksPage />
+          ) : (
+            <>
+              <MessageFeed messages={messages} />
+
+              <InputArea 
+                onSend={handleSend}
+                onAbort={handleAbort}
+                isProcessing={isProcessing}
+                disabled={!isConnected}
+                textareaRef={textareaRef}
+              />
+            </>
+          )}
         </div>
         
         {isFoundry && (

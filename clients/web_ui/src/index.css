@@ -539,3 +539,11 @@
   word-break: break-word;
   white-space: pre-wrap;
 }
+
+/* Placeholders are hints, not content - keep them visibly muted even when
+   the input itself sets a bright text color (Firefox inherits color by default). */
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}

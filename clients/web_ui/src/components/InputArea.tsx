@@ -148,7 +148,7 @@ export function InputArea({ onSend, onAbort, isProcessing, disabled, textareaRef
               onBlur={() => setIsFocused(false)}
               onPaste={handlePaste}
               placeholder={isProcessing
-                ? (isFoundry ? 'TYPE TO STEER OR /ABORT' : 'Type to steer, or press Esc to abort...')
+                ? (isFoundry ? 'PROCESSING — /ABORT' : 'Processing… (Esc to abort)')
                 : (isFoundry ? 'ENTER COMMAND' : 'Message Pi...')
               }
               disabled={disabled}

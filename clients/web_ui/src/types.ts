@@ -18,6 +18,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string | MessageContent[];
+  turnId?: string;
   isStreaming?: boolean;
   timestamp?: number;
   tokenUsage?: TokenUsage;

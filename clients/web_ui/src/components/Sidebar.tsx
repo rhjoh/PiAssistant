@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTheme } from '@/hooks/useTheme';
 import { useToolBlockPrefs } from '@/hooks/useToolBlockPrefs';
+import { Clock } from 'lucide-react';
 
 interface ModelInfo {
   provider: string;
   id: string;
   name: string;
 }
+
+export type SidebarView = 'chat' | 'tasks';
 
 interface SidebarProps {
   onNewChat: () => void;
@@ -16,6 +19,8 @@ interface SidebarProps {
   disabled?: boolean;
   isProcessing?: boolean;
   isConnected?: boolean;
+  activeView?: SidebarView;
+  onNavigate?: (view: SidebarView) => void;
 }
 
 export function Sidebar({
@@ -26,6 +31,8 @@ export function Sidebar({
   disabled,
   isProcessing = false,
   isConnected = false,
+  activeView = 'chat',
+  onNavigate,
 }: SidebarProps) {
   const { theme, cycleTheme } = useTheme();
   const { toolsExpandedByDefault, setToolsExpandedByDefault } = useToolBlockPrefs();
@@ -149,7 +156,10 @@ export function Sidebar({
 
         {/* New Chat */}
         <button
-          onClick={onNewChat}
+          onClick={() => {
+            onNewChat();
+            onNavigate?.('chat');
+          }}
           disabled={disabled}
           title="New chat"
           style={{
@@ -179,6 +189,39 @@ export function Sidebar({
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
+        </button>
+
+        {/* Tasks */}
+        <button
+          onClick={() => onNavigate?.('tasks')}
+          title={activeView === 'tasks' ? 'Back to chat' : 'Tasks'}
+          style={{
+            width: '40px',
+            height: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: activeView === 'tasks' ? 'var(--accent-primary-dim)' : 'transparent',
+            border: `1px solid ${activeView === 'tasks' ? 'var(--accent-primary)' : 'var(--border-color)'}`,
+            borderRadius: isFoundry ? '0' : 'var(--radius-md)',
+            color: activeView === 'tasks' ? 'var(--accent-primary)' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            transition: 'all var(--transition-fast)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeView !== 'tasks') {
+              e.currentTarget.style.borderColor = 'var(--accent-primary)';
+              e.currentTarget.style.color = 'var(--accent-primary)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeView !== 'tasks') {
+              e.currentTarget.style.borderColor = 'var(--border-color)';
+              e.currentTarget.style.color = 'var(--text-secondary)';
+            }
+          }}
+        >
+          <Clock size={18} />
         </button>
 
         {/* Model Selector */}
