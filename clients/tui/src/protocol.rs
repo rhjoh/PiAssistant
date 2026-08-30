@@ -93,6 +93,9 @@ pub enum ServerMessage {
     Pong { data: PongData },
     #[serde(rename = "proactive")]
     Proactive { data: ProactiveData },
+    /// Unknown gateway types (extension UI, notify, etc.) are ignored.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -187,8 +187,10 @@ export default function App() {
 
     switch (msg.type) {
       case 'connection': {
-        const connData = msg.data as { connected?: boolean; model?: ModelInfo; contextWindow?: number };
+        const connData = msg.data as { connected?: boolean; model?: ModelInfo; contextWindow?: number; contextTokens?: number; isProcessing?: boolean };
         if (connData.contextWindow) setContextWindow(connData.contextWindow);
+        if (typeof connData.contextTokens === 'number') setCumulativeUsage(connData.contextTokens);
+        if (typeof connData.isProcessing === 'boolean') setIsProcessing(connData.isProcessing);
         if (connData.model) {
           setCurrentModel(connData.model);
         }
@@ -201,7 +203,10 @@ export default function App() {
           setCurrentModel(stateData.model);
         }
         if (stateData.contextWindow) setContextWindow(stateData.contextWindow);
-        if (stateData.contextTokens) setCumulativeUsage(stateData.contextTokens);
+        if (typeof stateData.contextTokens === 'number') setCumulativeUsage(stateData.contextTokens);
+        if (typeof stateData.isProcessing === 'boolean') {
+          setIsProcessing(stateData.isProcessing);
+        }
         if (stateData.sessionUsage) {
           // Seed cumulative stats from gateway on connect
           // Will be overwritten by done messages as conversation progresses

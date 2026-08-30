@@ -47,6 +47,7 @@ class FakePi extends EventEmitter {
   stateData: unknown = { model: null, thinkingLevel: "off" };
   availableThinkingLevels: ThinkingLevel[] = ["off"];
   thinkingLevelCalls: ThinkingLevel[] = [];
+  extensionUiResponses: unknown[] = [];
 
   async prompt(message: string, options?: { source?: string; id?: string }): Promise<string> {
     this.promptCalls.push({ message, options });
@@ -115,6 +116,10 @@ class FakePi extends EventEmitter {
   async setThinkingLevel(level: ThinkingLevel): Promise<void> {
     this.thinkingLevelCalls.push(level);
     this.stateData = { ...(this.stateData as object), thinkingLevel: level };
+  }
+
+  respondToExtensionUi(payload: unknown): void {
+    this.extensionUiResponses.push(payload);
   }
 
   emitPiEvent(event: PiEvent): void {
@@ -616,5 +621,105 @@ describe("BroadcastManager steering/follow-up", () => {
     expect(pi.promptCalls).toHaveLength(2);
     expect(pi.submitCalls).toHaveLength(0);
     expect(clientA.lastOf("prompt_accepted")?.data.id).toBe("test-id");
+  });
+});
+
+describe("BroadcastManager extension UI and working state", () => {
+  it("broadcasts a select dialog and forwards the first client response to Pi", async () => {
+    const { manager, pi, clientA, clientB } = setup();
+    await manager.sendPrompt("ask me", "client-a");
+    pi.promptSource = "user";
+    pi.emitPiEvent({
+      type: "extension_ui_request",
+      id: "ui-1",
+      method: "select",
+      title: "Which one?",
+      options: ["A", "B"],
+    });
+    await flushEvents();
+
+    expect(clientA.lastOf("extension_ui_request")?.data).toMatchObject({
+      id: "ui-1",
+      method: "select",
+      title: "Which one?",
+      options: ["A", "B"],
+    });
+    expect(clientB.lastOf("extension_ui_request")?.data.id).toBe("ui-1");
+    expect(clientA.lastOf("state")?.data.working).toMatchObject({
+      kind: "extension_ui",
+      message: "Which one?",
+    });
+
+    await manager.submitExtensionUiResponse(
+      { type: "extension_ui_response", id: "ui-1", value: "B" },
+      "client-a"
+    );
+    await manager.submitExtensionUiResponse(
+      { type: "extension_ui_response", id: "ui-1", value: "A" },
+      "client-b"
+    );
+
+    expect(pi.extensionUiResponses).toEqual([
+      { type: "extension_ui_response", id: "ui-1", value: "B" },
+    ]);
+    expect(clientB.lastOf("extension_ui_resolved")?.data).toEqual({
+      id: "ui-1",
+      cancelled: false,
+    });
+  });
+
+  it("cancels a pending dialog on abort", async () => {
+    const { manager, pi, clientA } = setup();
+    await manager.sendPrompt("dangerous", "client-a");
+    pi.promptSource = "user";
+    pi.isPromptActive = true;
+    pi.emitPiEvent({
+      type: "extension_ui_request",
+      id: "ui-2",
+      method: "select",
+      title: "Allow rm -rf?",
+      options: ["Yes", "No"],
+    });
+    await flushEvents();
+
+    const abortPromise = manager.abort();
+    pi.settleRun("");
+    await abortPromise;
+
+    expect(pi.extensionUiResponses).toEqual([
+      { type: "extension_ui_response", id: "ui-2", cancelled: true },
+    ]);
+    expect(clientA.lastOf("extension_ui_resolved")?.data.cancelled).toBe(true);
+  });
+
+  it("broadcasts compaction as working state", async () => {
+    const { manager, pi, clientA } = setup();
+    await manager.sendPrompt("long chat", "client-a");
+    pi.promptSource = "user";
+    pi.emitPiEvent({ type: "compaction_start", reason: "threshold" });
+    await flushEvents();
+
+    expect(clientA.lastOf("state")?.data.working).toMatchObject({
+      kind: "compaction",
+      message: "Compacting context…",
+    });
+    expect(clientA.lastOf("state")?.data.isCompacting).toBe(true);
+
+    pi.emitPiEvent({
+      type: "compaction_end",
+      result: null,
+      aborted: false,
+    });
+    await flushEvents();
+
+    expect(clientA.lastOf("state")?.data.isCompacting).toBe(false);
+  });
+
+  it("broadcasts idle Pi errors to clients", async () => {
+    const { pi, clientA } = setup();
+    pi.emit("error", new Error("Pi error: quota exceeded"));
+    await flushEvents();
+
+    expect(clientA.lastOf("error")?.data.message).toBe("Pi error: quota exceeded");
   });
 });
