@@ -30,7 +30,8 @@ export type WSClientMessage =
   | { type: "get_thinking_levels" }
   | { type: "set_thinking_level"; level: ThinkingLevel }
   | { type: "command"; command: string; args?: string[] }
-  | { type: "ping"; timestamp?: number };
+  | { type: "ping"; timestamp?: number }
+  | WSExtensionUiResponse;
 
 export interface WSImageAttachment {
   data: string; // base64 encoded
@@ -77,6 +78,13 @@ export type WSServerMessage =
   | { type: "image"; data: { source: string; alt?: string } & WSTaskMetadata }
   | { type: "error"; data: { message: string } & WSTaskMetadata }
   | { type: "proactive"; data: { message: string } }
+  | { type: "notify"; data: { message: string; notifyType?: "info" | "warning" | "error" } }
+  | {
+      type: "extension_error";
+      data: { message: string; extensionPath?: string; event?: string };
+    }
+  | { type: "extension_ui_request"; data: WSExtensionUiRequest }
+  | { type: "extension_ui_resolved"; data: { id: string; cancelled?: boolean } }
   /**
    * A logical assistant response segment (one turn) has finished, but the
    * session-level run is still active (more queued work follows). Emitted
@@ -123,12 +131,38 @@ export interface WSModelInfo {
   thinkingLevels: ThinkingLevel[];
 }
 
-export interface WSConnectionData {
+export type WSWorkingKind = "compaction" | "retry" | "extension_ui" | "status";
+
+export interface WSWorkingStatus {
+  kind: WSWorkingKind;
+  message: string;
+}
+
+export type WSExtensionUiRequest = {
+  id: string;
+  method: string;
+  title?: string;
+  message?: string;
+  options?: string[];
+  placeholder?: string;
+  prefill?: string;
+  timeout?: number;
+  notifyType?: "info" | "warning" | "error";
+  statusKey?: string;
+  statusText?: string;
+  widgetKey?: string;
+  widgetLines?: string[];
+  widgetPlacement?: "aboveEditor" | "belowEditor";
+  text?: string;
+};
+
+export type WSExtensionUiResponse =
+  | { type: "extension_ui_response"; id: string; value: string }
+  | { type: "extension_ui_response"; id: string; confirmed: boolean }
+  | { type: "extension_ui_response"; id: string; cancelled: true };
+
+export interface WSConnectionData extends WSStateData {
   connected: true;
-  model?: WSModelInfo;
-  contextWindow?: number;
-  thinkingLevel?: ThinkingLevel;
-  availableThinkingLevels?: ThinkingLevel[];
 }
 
 export interface WSStateData {
@@ -140,6 +174,15 @@ export interface WSStateData {
   isProcessing: boolean;
   /** Cumulative session token usage */
   sessionUsage?: TokenUsage;
+  /** Pi session id; clients clear local transcripts when this changes. */
+  sessionId?: string;
+  isCompacting?: boolean;
+  /** Human-readable live activity (compaction, retry, waiting for input). */
+  working?: WSWorkingStatus | null;
+  /** Blocking extension UI dialog currently waiting for an answer, if any. */
+  pendingExtensionUi?: WSExtensionUiRequest | null;
+  /** Fire-and-forget widget lines from Pi extensions. */
+  widgets?: string[] | null;
 }
 
 export interface TokenUsage {

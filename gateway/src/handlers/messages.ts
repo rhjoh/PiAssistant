@@ -29,7 +29,7 @@ export class PromptHandler implements MessageHandler {
 
       client.send({
         type: "state",
-        data: { isProcessing: true },
+        data: this.broadcastManager.snapshotState(),
       });
 
       // Prompt start is logged once by BroadcastManager — see broadcast.ts
@@ -109,7 +109,7 @@ export class PromptWithImagesHandler implements MessageHandler {
 
       client.send({
         type: "state",
-        data: { isProcessing: true },
+        data: this.broadcastManager.snapshotState(),
       });
 
       console.log(`[WebSocket] Prompt with ${images.length} image(s) sent, ${participatingClients.size} clients will receive response`);
@@ -465,6 +465,19 @@ export class SetThinkingLevelHandler implements MessageHandler {
 
     const result = await this.broadcastManager.setThinkingLevel(message.level);
     client.send({ type: "thinking_level_changed", data: result });
+  }
+}
+
+export class ExtensionUiResponseHandler implements MessageHandler {
+  constructor(private broadcastManager: BroadcastManager) {}
+
+  canHandle(type: string): boolean {
+    return type === "extension_ui_response";
+  }
+
+  async handle(client: Client, message: WSClientMessage): Promise<void> {
+    if (message.type !== "extension_ui_response") return;
+    await this.broadcastManager.submitExtensionUiResponse(message, client.id);
   }
 }
 

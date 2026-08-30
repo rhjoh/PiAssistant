@@ -78,6 +78,18 @@ export class ApiServer {
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Local single-user server - allow cross-origin requests from web clients
+    // (vite dev server and the static web UI server run on different origins).
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     const requestUrl = new URL(req.url ?? "/", `http://${this.host}:${this.port}`);
     const url = requestUrl.pathname;
 

@@ -186,8 +186,8 @@ export default function registerMemoryTools(pi: ExtensionAPI) {
     name: "memory_update",
     label: "Memory Update",
     description:
-      "Update an existing memory by ID. Use when a fact has changed (e.g. rent amount, " +
-      "job status) and the old memory is now incorrect. Optionally archive the old memory " +
+      "Update an existing memory by ID. Use when a stored fact has changed and the old " +
+      "memory is now incorrect. Optionally archive the old memory " +
       "by combining update + archive in sequence.",
     promptSnippet: "Update an existing memory in Gateway SQLite",
     promptGuidelines: [

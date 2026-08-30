@@ -1,6 +1,14 @@
 import type { EventEmitter } from "node:events";
 import type { PiRpcClient } from "./pi-rpc.js";
-import type { PiEvent, PiAgentMessage, PiModelInfo, PiState } from "./types.js";
+import type {
+  PiEvent,
+  PiAgentMessage,
+  PiExtensionUiRequest,
+  PiExtensionUiResponse,
+  PiModelInfo,
+  PiState,
+} from "./types.js";
+import { isExtensionUiDialogMethod } from "./types.js";
 import type {
   Client,
   QueuedPrompt,
@@ -10,6 +18,9 @@ import type {
   WSServerMessage,
   WSModelInfo,
   WSStateData,
+  WSExtensionUiRequest,
+  WSExtensionUiResponse,
+  WSWorkingStatus,
 } from "./types-ws.js";
 import type { SessionManager } from "./session-manager.js";
 import { rememberToolLabel } from "./tool-call-cache.js";
@@ -122,6 +133,13 @@ export class BroadcastManager {
   private abortGraceMs: number;
   private clientSendTimeoutMs: number;
   private eventHandlerTimeoutMs: number;
+  /** Last full state snapshot broadcast to clients. */
+  private lastState: WSStateData = { isProcessing: false };
+  private pendingExtensionUi: WSExtensionUiRequest | null = null;
+  private isCompacting = false;
+  private isRetrying = false;
+  private statusEntries = new Map<string, string>();
+  private widgetLines: string[] | null = null;
 
   constructor(
     private pi: PiRpcClient,
@@ -141,6 +159,7 @@ export class BroadcastManager {
     this.eventHandlerTimeoutMs = options?.eventHandlerTimeoutMs ?? 30000;
     this.setupPiListeners();
     this.setupPiExitHandler();
+    this.setupPiErrorHandler();
   }
 
   /**
@@ -148,6 +167,174 @@ export class BroadcastManager {
    */
   setSessionManager(sessionManager: SessionManager): void {
     this.sessionManager = sessionManager;
+  }
+
+  snapshotState(): WSStateData {
+    return { ...this.lastState, isProcessing: this.isPromptInFlight() };
+  }
+
+  private composeWorking(): WSWorkingStatus | null {
+    if (this.pendingExtensionUi && isExtensionUiDialogMethod(this.pendingExtensionUi.method)) {
+      const title = this.pendingExtensionUi.title?.trim();
+      return {
+        kind: "extension_ui",
+        message: title || "Waiting for your answer",
+      };
+    }
+    if (this.isCompacting) {
+      return { kind: "compaction", message: "Compacting context…" };
+    }
+    if (this.isRetrying) {
+      return { kind: "retry", message: "Retrying…" };
+    }
+    for (const text of this.statusEntries.values()) {
+      if (text) return { kind: "status", message: text };
+    }
+    return null;
+  }
+
+  private mergeState(patch: Partial<WSStateData> = {}): WSStateData {
+    this.lastState = {
+      ...this.lastState,
+      ...patch,
+      isProcessing: patch.isProcessing ?? this.isPromptInFlight(),
+      isCompacting: patch.isCompacting ?? this.isCompacting,
+      working: patch.working !== undefined ? patch.working : this.composeWorking(),
+      pendingExtensionUi:
+        patch.pendingExtensionUi !== undefined ? patch.pendingExtensionUi : this.pendingExtensionUi,
+      widgets: patch.widgets !== undefined ? patch.widgets : this.widgetLines,
+    };
+    return { ...this.lastState };
+  }
+
+  private async broadcastState(patch: Partial<WSStateData> = {}): Promise<void> {
+    await this.broadcast({ type: "state", data: this.mergeState(patch) });
+  }
+
+  private toWsExtensionUiRequest(event: PiExtensionUiRequest): WSExtensionUiRequest {
+    const data: WSExtensionUiRequest = { id: event.id, method: event.method };
+    if ("title" in event && event.title !== undefined) data.title = event.title;
+    if ("message" in event && event.message !== undefined) data.message = event.message;
+    if ("options" in event && event.options !== undefined) data.options = event.options;
+    if ("placeholder" in event && event.placeholder !== undefined) data.placeholder = event.placeholder;
+    if ("prefill" in event && event.prefill !== undefined) data.prefill = event.prefill;
+    if ("timeout" in event && event.timeout !== undefined) data.timeout = event.timeout;
+    if ("notifyType" in event && event.notifyType !== undefined) data.notifyType = event.notifyType;
+    if ("statusKey" in event && event.statusKey !== undefined) data.statusKey = event.statusKey;
+    if ("statusText" in event) data.statusText = event.statusText;
+    if ("widgetKey" in event && event.widgetKey !== undefined) data.widgetKey = event.widgetKey;
+    if ("widgetLines" in event) data.widgetLines = event.widgetLines;
+    if ("widgetPlacement" in event && event.widgetPlacement !== undefined) {
+      data.widgetPlacement = event.widgetPlacement;
+    }
+    if ("text" in event && event.text !== undefined) data.text = event.text;
+    return data;
+  }
+
+  private cancelPendingExtensionUi(reason: string): void {
+    const pending = this.pendingExtensionUi;
+    if (!pending || !isExtensionUiDialogMethod(pending.method)) {
+      this.pendingExtensionUi = null;
+      return;
+    }
+    console.warn(`[Broadcast] Cancelling extension UI ${pending.id} (${pending.method}): ${reason}`);
+    const response: PiExtensionUiResponse = { type: "extension_ui_response", id: pending.id, cancelled: true };
+    try {
+      this.pi.respondToExtensionUi(response);
+    } catch (err) {
+      console.warn("[Broadcast] Failed to send extension UI cancellation to Pi:", err);
+    }
+    this.pendingExtensionUi = null;
+    this.broadcast({
+      type: "extension_ui_resolved",
+      data: { id: pending.id, cancelled: true },
+    }).catch(() => {});
+  }
+
+  /**
+   * Client answer to a Pi extension UI dialog. First valid response wins.
+   */
+  async submitExtensionUiResponse(message: WSExtensionUiResponse, clientId: string): Promise<void> {
+    const pending = this.pendingExtensionUi;
+    if (!pending || pending.id !== message.id) {
+      console.warn(
+        `[Broadcast] Ignoring extension UI response from ${clientId} (id=${message.id}, pending=${pending?.id ?? "none"})`
+      );
+      return;
+    }
+    if (!isExtensionUiDialogMethod(pending.method)) {
+      return;
+    }
+
+    let piResponse: PiExtensionUiResponse;
+    if ("cancelled" in message && message.cancelled) {
+      piResponse = { type: "extension_ui_response", id: message.id, cancelled: true };
+    } else if (pending.method === "confirm") {
+      const confirmed =
+        "confirmed" in message
+          ? message.confirmed
+          : "value" in message
+            ? message.value === "Yes" || message.value === "true"
+            : false;
+      piResponse = { type: "extension_ui_response", id: message.id, confirmed };
+    } else if ("value" in message) {
+      piResponse = { type: "extension_ui_response", id: message.id, value: message.value };
+    } else {
+      console.warn(`[Broadcast] Malformed extension UI response from ${clientId} for ${pending.method}`);
+      return;
+    }
+
+    this.pendingExtensionUi = null;
+    try {
+      this.pi.respondToExtensionUi(piResponse);
+    } catch (err) {
+      console.error("[Broadcast] Failed to send extension UI response to Pi:", err);
+    }
+    await this.broadcast({
+      type: "extension_ui_resolved",
+      data: { id: message.id, cancelled: "cancelled" in piResponse },
+    });
+    await this.broadcastState({ pendingExtensionUi: null });
+  }
+
+  private async handleExtensionUiRequest(event: PiExtensionUiRequest): Promise<void> {
+    if (event.method === "notify") {
+      await this.broadcast({
+        type: "notify",
+        data: { message: event.message, notifyType: event.notifyType },
+      });
+      return;
+    }
+
+    if (event.method === "setStatus") {
+      if (event.statusText) this.statusEntries.set(event.statusKey, event.statusText);
+      else this.statusEntries.delete(event.statusKey);
+      await this.broadcastState();
+      return;
+    }
+
+    if (event.method === "setWidget") {
+      this.widgetLines = event.widgetLines && event.widgetLines.length > 0 ? event.widgetLines : null;
+      await this.broadcastState({ widgets: this.widgetLines });
+      return;
+    }
+
+    if (event.method === "setTitle" || event.method === "set_editor_text") {
+      await this.broadcast({
+        type: "extension_ui_request",
+        data: this.toWsExtensionUiRequest(event),
+      });
+      return;
+    }
+
+    // Dialog methods block Pi until a client answers.
+    if (this.pendingExtensionUi && isExtensionUiDialogMethod(this.pendingExtensionUi.method)) {
+      this.cancelPendingExtensionUi("superseded by a new dialog");
+    }
+    const request = this.toWsExtensionUiRequest(event);
+    this.pendingExtensionUi = request;
+    await this.broadcast({ type: "extension_ui_request", data: request });
+    await this.broadcastState({ pendingExtensionUi: request });
   }
 
   /**
@@ -324,6 +511,8 @@ export class BroadcastManager {
       `[Broadcast] Prompt processing started (from ${input.originatingClientId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}, chars=${input.message.length})${input.images ? ` (${input.images.length} image(s))` : ""}`
     );
 
+    await this.broadcastState({ isProcessing: true });
+
     await this.broadcast(
       {
         type: "user_message",
@@ -350,11 +539,13 @@ export class BroadcastManager {
       // double-broadcast the error or clobber a newer turn's state.
       if (!this.currentPrompt) return;
       const metadata = this.turnMetadata();
+      this.cancelPendingExtensionUi("prompt error");
       this.resetRunState();
       this.broadcast({
         type: "error",
         data: { message: err instanceof Error ? err.message : "Unknown error", ...metadata },
-      });
+      }).catch(() => {});
+      this.broadcastState({ isProcessing: false, pendingExtensionUi: null }).catch(() => {});
     };
 
     if (input.images && input.images.length > 0) {
@@ -527,33 +718,39 @@ export class BroadcastManager {
       }
 
       const currentContextTokens = await this.readCurrentContextTokensFromSession();
+      const sessionId =
+        typeof stateData?.sessionId === "string" && stateData.sessionId ? stateData.sessionId : undefined;
+
+      const data: WSStateData = this.mergeState({
+        model: stateData?.model ? toWSModelInfo(stateData.model) : this.lastState.model,
+        contextWindow: stateData?.model?.contextWindow ?? this.lastState.contextWindow,
+        // An empty/fresh session has no assistant usage entry yet. Report
+        // zero explicitly so clients replace the previous session's count.
+        contextTokens: currentContextTokens ?? 0,
+        thinkingLevel: isThinkingLevel(stateData?.thinkingLevel) ? stateData.thinkingLevel : this.lastState.thinkingLevel,
+        availableThinkingLevels,
+        isProcessing: this.isPromptInFlight(),
+        sessionId,
+        isCompacting: Boolean(stateData?.isCompacting) || this.isCompacting,
+        sessionUsage: {
+          input: this.cumulativeUsage.input,
+          output: this.cumulativeUsage.output,
+          cacheRead: this.cumulativeUsage.cacheRead,
+          cacheWrite: this.cumulativeUsage.cacheWrite,
+          total: this.cumulativeUsage.total,
+          cost: this.cumulativeUsage.cost || undefined,
+        },
+      });
 
       return {
         type: "state",
-        data: {
-          model: stateData?.model ? toWSModelInfo(stateData.model) : undefined,
-          contextWindow: stateData?.model?.contextWindow,
-          // An empty/fresh session has no assistant usage entry yet. Report
-          // zero explicitly so clients replace the previous session's count.
-          contextTokens: currentContextTokens ?? 0,
-          thinkingLevel: isThinkingLevel(stateData?.thinkingLevel) ? stateData.thinkingLevel : undefined,
-          availableThinkingLevels,
-          isProcessing: this.isPromptInFlight(),
-          sessionUsage: {
-            input: this.cumulativeUsage.input,
-            output: this.cumulativeUsage.output,
-            cacheRead: this.cumulativeUsage.cacheRead,
-            cacheWrite: this.cumulativeUsage.cacheWrite,
-            total: this.cumulativeUsage.total,
-            cost: this.cumulativeUsage.cost || undefined,
-          },
-        },
+        data,
       };
     } catch (err) {
       console.error("[Broadcast] getState failed:", err);
       return {
         type: "state",
-        data: {
+        data: this.mergeState({
           isProcessing: this.isPromptInFlight(),
           sessionUsage: {
             input: this.cumulativeUsage.input,
@@ -563,7 +760,7 @@ export class BroadcastManager {
             total: this.cumulativeUsage.total,
             cost: this.cumulativeUsage.cost || undefined,
           },
-        },
+        }),
       };
     }
   }
@@ -583,7 +780,7 @@ export class BroadcastManager {
         const entry = JSON.parse(lines[i]);
         if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.usage) {
           const usage = entry.message.usage;
-          return (usage.cacheRead ?? 0) + (usage.inputTokens ?? 0);
+          return (usage.cacheRead ?? 0) + (usage.inputTokens ?? usage.input ?? 0);
         }
       }
     } catch {
@@ -624,6 +821,8 @@ export class BroadcastManager {
     const hadPendingQueues = this.pendingSteering.length > 0 || this.pendingFollowUps.length > 0;
     const piQueueHadItems = this.lastPiQueueHadItems || hadPendingQueues;
 
+    this.cancelPendingExtensionUi("abort");
+
     // Clear gateway pending metadata up front so client indicators disappear.
     if (hadPendingQueues) {
       this.clearPendingQueues();
@@ -631,7 +830,7 @@ export class BroadcastManager {
     }
 
     if (!this.isPromptInFlight()) {
-      await this.broadcast({ type: "state", data: { isProcessing: false } });
+      await this.broadcastState({ isProcessing: false, pendingExtensionUi: null });
       await this.broadcast({
         type: "abort_complete",
         data: { forced: false, restarted: false, message: "No active prompt to abort. Ready for a new message." },
@@ -661,7 +860,7 @@ export class BroadcastManager {
       const message = restarted
         ? "Prompt aborted - queued steering/follow-up messages were cleared. Ready for a new message."
         : "Prompt aborted and queued messages were cleared, but Pi failed to restart. Restart the gateway before sending another message.";
-      await this.broadcast(restarted ? await this.getState() : { type: "state", data: { isProcessing: false } });
+      await this.broadcast(restarted ? await this.getState() : { type: "state", data: this.mergeState({ isProcessing: false }) });
       await this.broadcast({
         type: "abort_complete",
         data: {
@@ -688,7 +887,7 @@ export class BroadcastManager {
   private async runAbortEscalation(ctx: { force: boolean }): Promise<void> {
     const settled = await this.waitForPromptSettle(this.abortGraceMs, () => ctx.force);
     if (settled) {
-      await this.broadcast({ type: "state", data: { isProcessing: false } });
+      await this.broadcastState({ isProcessing: false });
       await this.broadcast({
         type: "abort_complete",
         data: { forced: false, restarted: false, message: "Prompt aborted. Ready for a new message." },
@@ -720,7 +919,7 @@ export class BroadcastManager {
     } else if (piStillBusy) {
       message = "The stuck prompt was force-cleared, but Pi failed to restart. Restart the gateway before sending another message.";
     }
-    await this.broadcast(restarted ? await this.getState() : { type: "state", data: { isProcessing: false } });
+    await this.broadcast(restarted ? await this.getState() : { type: "state", data: this.mergeState({ isProcessing: false }) });
     await this.broadcast({
       type: "abort_complete",
       data: {
@@ -800,10 +999,13 @@ export class BroadcastManager {
       `[Broadcast] Task prompt started (${input.taskId}, ${clientIds.size} client${clientIds.size === 1 ? "" : "s"}, chars=${input.prompt.length})`
     );
 
+    await this.broadcastState({ isProcessing: true });
+
     try {
       return await this.pi.prompt(input.prompt, { source: "user", id: turnId });
     } catch (error) {
       const metadata = this.turnMetadata();
+      this.cancelPendingExtensionUi("task prompt error");
       this.resetRunState();
       await this.broadcast({
         type: "error",
@@ -812,6 +1014,7 @@ export class BroadcastManager {
           ...metadata,
         },
       });
+      await this.broadcastState({ isProcessing: false, pendingExtensionUi: null });
       throw error;
     }
   }
@@ -942,6 +1145,15 @@ export class BroadcastManager {
         this.cumulativeUsage.cacheWrite += usage.cacheWrite;
         this.cumulativeUsage.total += usage.total;
         if (usage.cost) this.cumulativeUsage.cost += usage.cost;
+      }
+      // Push per-segment context usage to all clients immediately. The
+      // "usage" message type is already handled by every client (GTK,
+      // Firefox sidebar, Telegram); without this broadcast the status-bar
+      // context count only refreshes when the whole run settles via "done".
+      const segmentUsage = enrichUsage(usage);
+      if (segmentUsage) {
+        this.lastState = { ...this.lastState, contextTokens: segmentUsage.contextTokens };
+        await this.broadcast({ type: "usage", data: segmentUsage });
       }
       const completedPrompt = this.currentPrompt;
       const durationMs = completedPrompt ? Date.now() - completedPrompt.startedAt : undefined;
@@ -1150,13 +1362,50 @@ export class BroadcastManager {
       this.resetRunState();
       this.recentlySettledPending = recentlySettled;
 
-      await this.broadcast({ type: "state", data: { isProcessing: false } });
+      await this.broadcastState({ isProcessing: false });
     };
 
     const handlePiEvent = async (
       event: PiEvent,
       promptSource: "user" | "internal" | null
     ): Promise<void> => {
+      if (event.type === "extension_ui_request") {
+        await this.handleExtensionUiRequest(event);
+        return;
+      }
+      if (event.type === "extension_error") {
+        await this.broadcast({
+          type: "extension_error",
+          data: {
+            message: event.error,
+            extensionPath: event.extensionPath,
+            event: event.event,
+          },
+        });
+        return;
+      }
+      if (event.type === "compaction_start" || event.type === "auto_compaction_start") {
+        this.isCompacting = true;
+        await this.broadcastState({ isCompacting: true });
+        return;
+      }
+      if (event.type === "compaction_end" || event.type === "auto_compaction_end") {
+        this.isCompacting = false;
+        const snapshot = await this.getState();
+        await this.broadcast(snapshot);
+        return;
+      }
+      if (event.type === "auto_retry_start") {
+        this.isRetrying = true;
+        await this.broadcastState();
+        return;
+      }
+      if (event.type === "auto_retry_end") {
+        this.isRetrying = false;
+        await this.broadcastState();
+        return;
+      }
+
       if (promptSource !== "user") {
         // Log one line per suppressed turn block, not per event
         if (!suppressedEventsLogged) {
@@ -1367,7 +1616,20 @@ export class BroadcastManager {
     // Lifecycle events (agent_end, agent_settled, message_start) must never be
     // suppressed or the gateway enters a stuck state where currentPrompt is
     // never cleared or queued messages are never matched.
-    const LIFECYCLE_EVENTS = new Set(["agent_end", "agent_settled", "message_start", "queue_update"]);
+    const LIFECYCLE_EVENTS = new Set([
+      "agent_end",
+      "agent_settled",
+      "message_start",
+      "queue_update",
+      "extension_ui_request",
+      "extension_error",
+      "compaction_start",
+      "compaction_end",
+      "auto_compaction_start",
+      "auto_compaction_end",
+      "auto_retry_start",
+      "auto_retry_end",
+    ]);
     let lastEventTime = 0;
     let eventCount = 0;
     const RATE_WINDOW_MS = 1000;
@@ -1620,8 +1882,28 @@ export class BroadcastManager {
           type: "error",
           data: { message: "Assistant process exited - please start a new session", ...metadata },
         }).catch(() => {});
-        this.broadcast({ type: "state", data: { isProcessing: false } }).catch(() => {});
+        this.cancelPendingExtensionUi("Pi process exited");
+        this.isCompacting = false;
+        this.isRetrying = false;
+        this.broadcastState({ isProcessing: false, pendingExtensionUi: null }).catch(() => {});
+      } else {
+        this.cancelPendingExtensionUi("Pi process exited");
       }
+    });
+  }
+
+  private setupPiErrorHandler(): void {
+    this.pi.on("error", (err: Error) => {
+      if (this.currentPrompt) {
+        // Active prompts already reject and go through onPromptError.
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Broadcast] Pi error while idle:", message);
+      this.broadcast({
+        type: "error",
+        data: { message },
+      }).catch(() => {});
     });
   }
 
@@ -1823,7 +2105,7 @@ export class BroadcastManager {
         const entry = JSON.parse(lines[i]);
         if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.usage) {
           const u = entry.message.usage;
-          currentTokens = (u.cacheRead ?? 0) + (u.inputTokens ?? 0);
+          currentTokens = (u.cacheRead ?? 0) + (u.inputTokens ?? u.input ?? 0);
           break;
         }
       }

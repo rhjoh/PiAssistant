@@ -38,7 +38,8 @@ export type PiCommand =
   | { type: "set_model"; provider: string; modelId: string; id?: string }
   | { type: "set_thinking_level"; level: ThinkingLevel; id?: string }
   | { type: "new_session"; parentSession?: string; id?: string }
-  | { type: "switch_session"; sessionPath: string; id?: string };
+  | { type: "switch_session"; sessionPath: string; id?: string }
+  | PiExtensionUiResponse;
 
 // Image content for Pi RPC (see docs/rpc.md)
 export interface ImageContent {
@@ -129,7 +130,95 @@ export type PiEvent =
   // Legacy compaction event names (older Pi versions).
   | { type: "auto_compaction_start"; reason: "threshold" | "overflow" }
   | { type: "auto_compaction_end"; result: CompactionResult | null; aborted: boolean; willRetry: boolean }
-  | { type: "response"; id?: string; command: string; success: boolean };
+  | { type: "response"; id?: string; command: string; success: boolean }
+  | PiExtensionUiRequest
+  | {
+      type: "extension_error";
+      extensionPath?: string;
+      event?: string;
+      error: string;
+    };
+
+/** Pi RPC extension UI request (stdout). Dialog methods block until a response. */
+export type PiExtensionUiRequest =
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "select";
+      title: string;
+      options: string[];
+      timeout?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "confirm";
+      title: string;
+      message: string;
+      timeout?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "input";
+      title: string;
+      placeholder?: string;
+      timeout?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "editor";
+      title: string;
+      prefill?: string;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "notify";
+      message: string;
+      notifyType?: "info" | "warning" | "error";
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "setStatus";
+      statusKey: string;
+      statusText: string | undefined;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "setWidget";
+      widgetKey: string;
+      widgetLines: string[] | undefined;
+      widgetPlacement?: "aboveEditor" | "belowEditor";
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "setTitle";
+      title: string;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "set_editor_text";
+      text: string;
+    };
+
+/** Client → Pi response for a blocking extension UI dialog. */
+export type PiExtensionUiResponse =
+  | { type: "extension_ui_response"; id: string; value: string }
+  | { type: "extension_ui_response"; id: string; confirmed: boolean }
+  | { type: "extension_ui_response"; id: string; cancelled: true };
+
+export const EXTENSION_UI_DIALOG_METHODS = ["select", "confirm", "input", "editor"] as const;
+export type ExtensionUiDialogMethod = (typeof EXTENSION_UI_DIALOG_METHODS)[number];
+
+export function isExtensionUiDialogMethod(method: string): method is ExtensionUiDialogMethod {
+  return (EXTENSION_UI_DIALOG_METHODS as readonly string[]).includes(method);
+}
 
 /** An LLM/agent message as carried by message_start/message_end/turn_end events. */
 export interface PiAgentMessage {

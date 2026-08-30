@@ -5,6 +5,9 @@ import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { MemoryStore, WriteMemoryInput } from "./memory-store.js";
 
+const PI_PROMPT_TIMEOUT_MS = 5 * 60 * 1000;
+const PI_KILL_GRACE_MS = 5 * 1000;
+
 type SessionOffsetState = Record<
   string,
   {
@@ -40,7 +43,7 @@ export type DailyContextTriggerResult = {
   entriesProcessed: number;
   extractionRan: boolean;
   memoriesSaved: number;
-  skippedReason?: "already_running" | "main_session_busy" | "already_extracted_today" | "before_extraction_hour" | "no_entries";
+  skippedReason?: "already_running" | "already_extracted_today" | "before_extraction_hour" | "no_entries";
   date: string;
 };
 
@@ -58,7 +61,6 @@ export type DailyContextOptions = {
   briefingPath: string;
   maxTranscriptChars: number;
   onTick?: () => void;
-  isBusy?: () => boolean;
 };
 
 export class DailyContextManager {
@@ -103,18 +105,6 @@ export class DailyContextManager {
         extractionRan: false,
         memoriesSaved: 0,
         skippedReason: "already_running",
-        date,
-      };
-    }
-
-    if (this.options.isBusy?.()) {
-      console.log("[DailyContext] Tick skipped — main session is busy");
-      return {
-        updatedToday: false,
-        entriesProcessed: 0,
-        extractionRan: false,
-        memoriesSaved: 0,
-        skippedReason: "main_session_busy",
         date,
       };
     }
@@ -415,7 +405,7 @@ export class DailyContextManager {
         // to avoid false positives from vague patterns
         if (result.content.toLowerCase().includes(pattern.toLowerCase())) {
           this.options.memoryStore.archiveMemory(result.id);
-          console.log(`[DailyContext] Archived superseded memory ${result.id}: "${result.content.slice(0, 80)}..." (matched pattern: "${pattern}")`);
+          console.log(`[DailyContext] Archived superseded memory ${result.id}`);
         }
       }
     }
@@ -469,6 +459,25 @@ export class DailyContextManager {
         });
         let stdout = "";
         let stderr = "";
+        let timedOut = false;
+        let killTimer: NodeJS.Timeout | null = null;
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          console.error(`[DailyContext] pi ${purpose} timed out after ${PI_PROMPT_TIMEOUT_MS}ms; terminating`);
+          child.kill("SIGTERM");
+          killTimer = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, PI_KILL_GRACE_MS);
+          killTimer.unref();
+        }, PI_PROMPT_TIMEOUT_MS);
+        timeout.unref();
+
+        const clearTimers = (): void => {
+          clearTimeout(timeout);
+          if (killTimer) clearTimeout(killTimer);
+        };
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
         child.stdout.on("data", (chunk) => {
@@ -477,8 +486,16 @@ export class DailyContextManager {
         child.stderr.on("data", (chunk) => {
           stderr += chunk;
         });
-        child.on("error", reject);
-        child.on("exit", (code) => {
+        child.on("error", (error) => {
+          clearTimers();
+          reject(error);
+        });
+        child.on("close", (code) => {
+          clearTimers();
+          if (timedOut) {
+            reject(new Error(`pi ${purpose} timed out after ${PI_PROMPT_TIMEOUT_MS}ms`));
+            return;
+          }
           if (code === 0) {
             resolve(stdout.trim());
           } else {
@@ -597,12 +614,28 @@ function normalizeTimestamp(value: string | number | undefined): number {
   return Date.now();
 }
 
+/** Per-message char cap for extraction transcripts. Prevents a single long message
+ *  (e.g. a large reply or pasted dump) from dominating the whole day's budget. */
+const MAX_ENTRY_CHARS = 3000;
+
 function formatTranscript(entries: SessionEntry[], maxChars: number): string {
-  const lines = entries.map((entry) => {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const entry of entries) {
+    const text = sanitizeTranscriptText(entry.text);
+    // Dedupe exact duplicate (role, text) pairs — sessions archived mid-day can
+    // leave the same message in both the archived file and the live file.
+    const key = `${entry.role}\u0000${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const trimmed =
+      text.length > MAX_ENTRY_CHARS
+        ? `${text.slice(0, MAX_ENTRY_CHARS)}…[+${text.length - MAX_ENTRY_CHARS} chars]`
+        : text;
     const iso = new Date(entry.timestamp).toISOString();
     const session = basename(entry.sessionPath);
-    return `- (${entry.role}, ${iso}, ${session}) ${sanitizeTranscriptText(entry.text)}`;
-  });
+    lines.push(`- (${entry.role}, ${iso}, ${session}) ${trimmed}`);
+  }
   return truncateMiddle(lines.join("\n"), maxChars);
 }
 

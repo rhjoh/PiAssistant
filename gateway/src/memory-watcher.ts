@@ -255,10 +255,7 @@ export class MemoryWatcher {
     filePath: string;
   }): Promise<void> {
     console.log(`[MemoryWatcher] Extracting ${params.target} (provider/model: ${this.options.provider}/${this.options.model})...`);
-    console.log(`[MemoryWatcher:${params.target}] Prompt (${params.prompt.length} chars):`);
-    console.log(`--- START PROMPT ---`);
-    console.log(params.prompt);
-    console.log(`--- END PROMPT ---`);
+    console.log(`[MemoryWatcher:${params.target}] Prompt prepared (${params.prompt.length} chars)`);
     
     let stdout: string;
     try {
@@ -302,7 +299,6 @@ export class MemoryWatcher {
         proc.stderr.on("data", (chunk) => {
           const text = chunk.toString();
           err += text;
-          console.log(`[MemoryWatcher:${params.target}:stderr] ${text.trim()}`);
         });
         
         proc.on("close", (code) => {
@@ -314,7 +310,7 @@ export class MemoryWatcher {
             resolve(out);
           } else {
             console.error(`[MemoryWatcher:${params.target}] ❌ pi exited with code ${code} (${elapsed}s)`);
-            if (err) console.error(`[MemoryWatcher:${params.target}] stderr: ${err.slice(0, 500)}`);
+            if (err) console.error(`[MemoryWatcher:${params.target}] stderr captured (${err.length} chars)`);
             reject(new Error(`pi exited with code ${code}`));
           }
         });
@@ -344,10 +340,7 @@ export class MemoryWatcher {
       return;
     }
 
-    // Log the actual artefacts being saved
-    console.log(`[MemoryWatcher] ━━━ ${params.target.toUpperCase()} ARTEFACTS ━━━`);
-    console.log(output);
-    console.log(`[MemoryWatcher] ━━━ END ${params.target.toUpperCase()} ━━━`);
+    console.log(`[MemoryWatcher] ${params.target}: extracted ${output.length} chars`);
 
     await fs.appendFile(params.filePath, `${output}\n`);
     console.log(`[MemoryWatcher] Saved to ${params.filePath}`);

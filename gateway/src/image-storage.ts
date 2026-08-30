@@ -1,16 +1,13 @@
 /**
  * Image Storage Service
- * 
+ *
  * Handles saving and loading images to/from disk instead of storing base64 in session.
- * Images are stored in ~/assistant_main/images/ with unique filenames.
+ * The directory comes from config (`IMAGE_DIR`, else `<PI_CWD>/images`).
  */
 
 import { mkdir, readFile, writeFile, readdir, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { homedir } from "node:os";
-
-const DEFAULT_IMAGE_DIR = join(homedir(), "assistant_main", "images");
 
 export interface StoredImage {
   path: string;
@@ -27,7 +24,7 @@ export interface ImageReference {
 export class ImageStorage {
   private imageDir: string;
 
-  constructor(imageDir: string = DEFAULT_IMAGE_DIR) {
+  constructor(imageDir: string) {
     this.imageDir = imageDir;
   }
 

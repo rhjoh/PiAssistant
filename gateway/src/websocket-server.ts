@@ -19,6 +19,7 @@ import {
   SwitchModelHandler,
   GetThinkingLevelsHandler,
   SetThinkingLevelHandler,
+  ExtensionUiResponseHandler,
 } from "./handlers/messages.js";
 
 interface WSClient extends Client {
@@ -62,6 +63,7 @@ export class WebSocketGateway {
       new SwitchModelHandler(broadcastManager),
       new GetThinkingLevelsHandler(broadcastManager),
       new SetThinkingLevelHandler(broadcastManager),
+      new ExtensionUiResponseHandler(broadcastManager),
     ]);
   }
 
@@ -168,23 +170,20 @@ export class WebSocketGateway {
         client.send({
           type: "connection",
           data: {
+            ...stateMessage.data,
             connected: true,
-            model: stateMessage.data.model,
-            contextWindow: stateMessage.data.contextWindow,
-            thinkingLevel: stateMessage.data.thinkingLevel,
-            availableThinkingLevels: stateMessage.data.availableThinkingLevels,
           },
         });
       } else {
         client.send({
           type: "connection",
-          data: { connected: true },
+          data: { connected: true, isProcessing: false },
         });
       }
     } catch {
       client.send({
         type: "connection",
-        data: { connected: true },
+        data: { connected: true, isProcessing: false },
       });
     }
   }

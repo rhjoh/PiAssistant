@@ -11,7 +11,6 @@ export interface HeartbeatOptions {
   intervalMs?: number;
   heartbeatFile?: string;
   onTick?: () => void;
-  isBusy?: () => boolean;
   quietWindowMs?: number;
   hasRecentUserActivity?: (windowMs: number) => boolean;
 }
@@ -21,7 +20,6 @@ export class Heartbeat {
   private intervalMs: number;
   private heartbeatFile: string;
   private onTick?: () => void;
-  private isBusy?: () => boolean;
   private quietWindowMs: number;
   private hasRecentUserActivity?: (windowMs: number) => boolean;
 
@@ -34,7 +32,6 @@ export class Heartbeat {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.heartbeatFile = options.heartbeatFile ?? "prompts/heartbeat.md";
     this.onTick = options.onTick;
-    this.isBusy = options.isBusy;
     this.quietWindowMs = options.quietWindowMs ?? this.intervalMs;
     this.hasRecentUserActivity = options.hasRecentUserActivity;
   }
@@ -62,10 +59,6 @@ export class Heartbeat {
   private async tick(): Promise<void> {
     if (!this.pi.isRunning) {
       console.log("[Heartbeat] Skipping - Pi not running");
-      return;
-    }
-    if (this.isBusy?.()) {
-      console.log("[Heartbeat] Skipping - user prompt in progress");
       return;
     }
     if (this.hasRecentUserActivity?.(this.quietWindowMs)) {
@@ -109,7 +102,7 @@ export class Heartbeat {
         return;
       }
 
-      console.log(`[Heartbeat] Agent responded: ${trimmed.slice(0, 100)}...`);
+      console.log(`[Heartbeat] Agent responded (${trimmed.length} chars)`);
       this.onResponse(trimmed);
     } catch (err) {
       console.error("[Heartbeat] Error:", err);

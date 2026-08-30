@@ -27,7 +27,14 @@ function scrubHerdrEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   }
   return scrubbed;
 }
-import type { PiCommand, PiEvent, PiResponse, PiState, ThinkingLevel } from "./types.js";
+import type {
+  PiCommand,
+  PiEvent,
+  PiExtensionUiResponse,
+  PiResponse,
+  PiState,
+  ThinkingLevel,
+} from "./types.js";
 
 export interface PiRpcEvents {
   event: [PiEvent];
@@ -423,6 +430,14 @@ export class PiRpcClient extends EventEmitter<PiRpcEvents> {
     }
     const json = JSON.stringify(command);
     this.process.stdin.write(json + "\n");
+  }
+
+  /**
+   * Reply to a blocking Pi extension UI dialog. The `id` must match the
+   * `extension_ui_request` Pi emitted; this is not a command correlation id.
+   */
+  respondToExtensionUi(response: PiExtensionUiResponse): void {
+    this.send(response);
   }
 
   abort(): void {

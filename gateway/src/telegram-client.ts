@@ -145,12 +145,54 @@ export class TelegramClient implements Client {
         this.clearContext();
         break;
 
+      case "notify": {
+        const kind = message.data.notifyType ?? "info";
+        const prefix = kind === "error" ? "Error" : kind === "warning" ? "Warning" : "Notice";
+        await ctx.reply(`${prefix}: ${message.data.message}`);
+        break;
+      }
+
+      case "extension_error":
+        await ctx.reply(`Extension error: ${message.data.message}`);
+        break;
+
+      case "extension_ui_request": {
+        if (["select", "confirm", "input", "editor"].includes(message.data.method)) {
+          const title = message.data.title || message.data.message || "Pi is waiting for your answer";
+          const options = message.data.options?.length
+            ? `\n${message.data.options.map((opt, i) => `${i + 1}. ${opt}`).join("\n")}`
+            : "";
+          await ctx.reply(
+            `${title}${options}\n\nAnswer this in the desktop client — Telegram cannot submit the choice.`
+          );
+        }
+        break;
+      }
+
       case "connection":
       case "state":
       case "history":
       case "thinking_delta":
       case "thinking_done":
-        // These are not typically sent to Telegram
+      case "extension_ui_resolved":
+      case "image":
+      case "proactive":
+      case "usage":
+      case "prompt_accepted":
+      case "prompt_queued":
+      case "queue_update":
+      case "abort_complete":
+      case "response_segment_done":
+      case "models":
+      case "model_switched":
+      case "thinking_levels":
+      case "thinking_level_changed":
+      case "pong":
+      case "ping":
+      case "user_message":
+        break;
+
+      default:
         break;
     }
   }

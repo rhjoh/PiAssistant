@@ -139,6 +139,7 @@ export class MemoryStore {
         SET embedding_status = 'ready', embedding_error = NULL, updated_at = ?
         WHERE id = ?
       `).run(new Date().toISOString(), id);
+      console.info(`[MemoryStore] Memory ${id} vectorised (${embedding.length}-dim)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       db.prepare(`
@@ -146,7 +147,7 @@ export class MemoryStore {
         SET embedding_status = 'pending', embedding_error = ?, updated_at = ?
         WHERE id = ?
       `).run(message.slice(0, 500), new Date().toISOString(), id);
-      console.warn(`[MemoryStore] Memory ${id} saved without embedding: ${message}`);
+      console.warn(`[MemoryStore] Memory ${id} saved without embedding (embedding service down, e.g. Ollama not running?): ${message}`);
     }
 
     return this.getMemory(id);
@@ -209,6 +210,7 @@ export class MemoryStore {
           SET embedding_status = 'ready', embedding_error = NULL, updated_at = ?
           WHERE id = ?
         `).run(new Date().toISOString(), row.id);
+        console.info(`[MemoryStore] Memory ${row.id} vectorised (${embedding.length}-dim)`);
         ready++;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -217,10 +219,12 @@ export class MemoryStore {
           SET embedding_status = 'failed', embedding_error = ?, updated_at = ?
           WHERE id = ?
         `).run(message.slice(0, 500), new Date().toISOString(), row.id);
+        console.warn(`[MemoryStore] Backfill embedding failed for memory ${row.id} (embedding service down, e.g. Ollama not running?): ${message}`);
         failed++;
       }
     }
 
+    console.info(`[MemoryStore] Embedding backfill complete: ${rows.length} processed, ${ready} ready, ${failed} failed`);
     return { processed: rows.length, ready, failed };
   }
 
@@ -480,6 +484,25 @@ export class MemoryStore {
     return Boolean(row);
   }
 
+  /**
+   * Remove a row from the vector index, tolerating a missing or unavailable
+   * vector table. The vec0 table is only created on the first successful
+   * embed, so if the embedding service (Ollama) is down the table may not
+   * exist yet — a failed removal must not fail the surrounding operation.
+   */
+  private removeVector(id: number): void {
+    const db = this.requireDb();
+    try {
+      db.prepare("DELETE FROM memory_vec WHERE rowid = ?").run(BigInt(id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[MemoryStore] Vector removal skipped for memory ${id} ` +
+        `(embedding service unavailable, e.g. Ollama not running?): ${message}`
+      );
+    }
+  }
+
   getMemory(id: number): MemoryRecord {
     const memory = this.getMemoryOrNull(id);
     if (!memory) throw new Error(`Memory ${id} not found`);
@@ -530,7 +553,7 @@ export class MemoryStore {
 
     // Re-index FTS if content changed
     if (updates.content !== undefined) {
-      db.prepare("DELETE FROM memory_vec WHERE rowid = ?").run(BigInt(id));
+      this.removeVector(id);
       // Re-embed asynchronously is fine — the FTS trigger already updated.
       // Embedding will be backfilled on next search or backfill pass.
       db.prepare(`UPDATE memories SET embedding_status = 'pending' WHERE id = ?`).run(id);
@@ -546,7 +569,7 @@ export class MemoryStore {
 
     const now = new Date().toISOString();
     db.prepare("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now, id);
-    db.prepare("DELETE FROM memory_vec WHERE rowid = ?").run(BigInt(id));
+    this.removeVector(id);
 
     // Return the archived record (re-fetch without archived filter)
     const row = db.prepare("SELECT * FROM memories WHERE id = ?").get(id) as DbMemoryRow;
