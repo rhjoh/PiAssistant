@@ -20,6 +20,15 @@ except ImportError:  # Package import from the repository test runner.
     from .config import STATUS_ERR_COLOR, STATUS_OK_COLOR
 
 
+def format_token_count(tokens):
+    """Format a token count compactly for the status line."""
+
+    tokens = int(tokens)
+    if tokens < 1000:
+        return f"{tokens:,}"
+    return f"{(tokens + 500) // 1000:,}k"
+
+
 class ConnectionStatus:
     """Render connection/model state into a GTK label.
 
@@ -45,6 +54,7 @@ class ConnectionStatus:
         self._thinking_level = None
         self._token_total = None
         self._context_window: int | None = None
+        self._working = None
         self._processing = False
         self._pulse_phase = 0.0
         self._pulse_source = self._glib.timeout_add(
@@ -128,6 +138,17 @@ class ConnectionStatus:
         self._context_window = limit
         self.render()
 
+    def set_working(self, text):
+        """Set the live activity line (compaction, retry, waiting for input)."""
+
+        if text is None or (isinstance(text, str) and not text.strip()):
+            self._working = None
+        elif isinstance(text, str):
+            self._working = text.strip()
+        else:
+            return
+        self.render()
+
     def set_processing(self, processing):
         """Flip the busy flag and re-render the connected status line."""
 
@@ -155,12 +176,16 @@ class ConnectionStatus:
         if self._thinking_level:
             escaped_level = self._glib.markup_escape_text(self._thinking_level)
             rest += f" · thinking: {escaped_level}"
+        if self._working:
+            escaped_working = self._glib.markup_escape_text(self._working)
+            rest += f" · {escaped_working}"
         if self._token_total is not None:
             if self._context_window is not None:
                 rest += (
-                    f" · {self._token_total:,}/{self._context_window:,} tok")
+                    f" · {format_token_count(self._token_total)}"
+                    f"/{format_token_count(self._context_window)} tok")
             else:
-                rest += f" · {self._token_total:,} tok"
+                rest += f" · {format_token_count(self._token_total)} tok"
         self.label.set_markup(
             f'<span color="{STATUS_OK_COLOR}" alpha="{pct}%">●</span> '
             f'<span alpha="55%">{rest}</span>')

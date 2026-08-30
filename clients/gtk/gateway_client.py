@@ -6,10 +6,9 @@ never imports GTK; callers provide a ``dispatch`` function (for example,
 ``lambda callback: GLib.idle_add(callback)``) to hand callbacks back to the
 UI thread.
 
-This is deliberately a one-shot connection.  It preserves the current GTK
-client behaviour: one connection attempt is made, the complete history is
-requested with ``limit=0``, and a connection error is reported to the caller
-without an automatic reconnect.
+This reconnects automatically when the socket drops, unless ``reconnect``
+is false (the unit tests use a one-shot connection).  Each successful
+connect requests the complete history with ``limit=0``.
 """
 
 from __future__ import annotations
@@ -68,13 +67,21 @@ class GatewayClient:
         on_message: Callback | None = None,
         on_error: Callback | None = None,
         on_connected: Callback | None = None,
+        on_disconnected: Callback | None = None,
         connect_factory: ConnectFactory | None = None,
+        reconnect: bool = True,
+        reconnect_min_delay: float = 1.0,
+        reconnect_max_delay: float = 15.0,
     ) -> None:
         self.uri = uri
         self._dispatch = dispatch or _direct_dispatch
         self._on_message = on_message
         self._on_error = on_error
         self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
+        self._reconnect = reconnect
+        self._reconnect_min_delay = reconnect_min_delay
+        self._reconnect_max_delay = reconnect_max_delay
         # The client requests the complete session history (limit=0), which
         # can far exceed websockets' 1 MiB default max_size (the gateway
         # responds with one large `history` frame).  Disable the receive
@@ -100,10 +107,11 @@ class GatewayClient:
     # ------------------------------------------------------------------
 
     def start(self) -> bool:
-        """Start the one-shot connection attempt.
+        """Start the connection thread.
 
         Returns ``True`` when a new thread was started and ``False`` for
-        repeated calls or calls after :meth:`close`.
+        repeated calls or calls after :meth:`close`.  When ``reconnect`` is
+        true the thread keeps retrying until :meth:`close`.
         """
 
         with self._lock:
@@ -244,51 +252,64 @@ class GatewayClient:
             self._task = task
             self._send_lock = asyncio.Lock()
 
-        if self._stopping.is_set():
-            return
+        delay = self._reconnect_min_delay
+        while not self._stopping.is_set():
+            try:
+                await self._connect_once()
+                delay = self._reconnect_min_delay
+            except asyncio.CancelledError:
+                if not self._stopping.is_set():
+                    self._notify_error("connection cancelled")
+                raise
+            except Exception as exc:
+                if self._stopping.is_set():
+                    return
+                self._notify_disconnected(str(exc))
+                if not self._reconnect:
+                    self._notify_error(str(exc))
+                    return
+            if self._stopping.is_set() or not self._reconnect:
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self._reconnect_max_delay)
 
-        try:
-            async with self._connect_factory(self.uri) as ws:
-                with self._lock:
-                    if self._stopping.is_set():
-                        return
-                    self._ws = ws
-
-                self._notify_connected()
-                logger.info("websocket connected uri=%s", self.uri)
-
-                # A zero limit explicitly requests all history.  This is the
-                # gateway's documented convention (non-positive limits return
-                # the complete session).
-                await self._send_on_socket(
-                    ws,
-                    self._send_lock,
-                    {"type": "get_history", "limit": 0},
-                    raise_on_error=True,
-                )
-
-                async for raw in ws:
-                    if self._stopping.is_set():
-                        break
-                    try:
-                        message = json.loads(raw)
-                    except (TypeError, ValueError):
-                        # Match the existing GTK client: malformed frames are
-                        # ignored rather than surfaced as user-facing errors.
-                        continue
-                    if isinstance(message, dict):
-                        self._notify_message(message)
-        except asyncio.CancelledError:
-            if not self._stopping.is_set():
-                self._notify_error("connection cancelled")
-            raise
-        except Exception as exc:
-            if not self._stopping.is_set():
-                self._notify_error(str(exc))
-        finally:
+    async def _connect_once(self) -> None:
+        async with self._connect_factory(self.uri) as ws:
             with self._lock:
-                self._ws = None
-            logger.info("websocket closed uri=%s", self.uri)
+                if self._stopping.is_set():
+                    return
+                self._ws = ws
+
+            self._notify_connected()
+            logger.info("websocket connected uri=%s", self.uri)
+
+            # A zero limit explicitly requests all history.  This is the
+            # gateway's documented convention (non-positive limits return
+            # the complete session).
+            await self._send_on_socket(
+                ws,
+                self._send_lock,
+                {"type": "get_history", "limit": 0},
+                raise_on_error=True,
+            )
+
+            async for raw in ws:
+                if self._stopping.is_set():
+                    break
+                try:
+                    message = json.loads(raw)
+                except (TypeError, ValueError):
+                    # Match the existing GTK client: malformed frames are
+                    # ignored rather than surfaced as user-facing errors.
+                    continue
+                if isinstance(message, dict):
+                    self._notify_message(message)
+
+        with self._lock:
+            self._ws = None
+        logger.info("websocket closed uri=%s", self.uri)
+        if not self._stopping.is_set():
+            self._notify_disconnected("connection closed")
 
     async def _send_on_socket(
         self,
@@ -330,6 +351,10 @@ class GatewayClient:
     def _notify_error(self, error: str) -> None:
         if self._on_error is not None and not self._stopping.is_set():
             self._schedule(self._on_error, error)
+
+    def _notify_disconnected(self, reason: str) -> None:
+        if self._on_disconnected is not None and not self._stopping.is_set():
+            self._schedule(self._on_disconnected, reason)
 
     def _schedule(self, callback: Callback, *args: Any) -> None:
         """Dispatch a callback and make queued callbacks shutdown-safe."""

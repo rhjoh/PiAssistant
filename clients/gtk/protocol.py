@@ -64,3 +64,11 @@ def model_name(model):
     if model.get("provider") or model.get("id"):
         return f"{model.get('provider', '?')}/{model.get('id', '?')}"
     return None
+
+
+def session_id(data):
+    """Return the gateway session id from a connection/state payload."""
+
+    data = data or {}
+    value = data.get("sessionId")
+    return value if isinstance(value, str) and value else None

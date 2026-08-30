@@ -39,7 +39,7 @@ class MdRenderer(html.parser.HTMLParser):
         self.lines = []
         self._stack = []       # {"kind": "p"|"h"|"li", "level": n, "runs": []}
         self._inline = []      # open inline tags
-        self._lists = []       # ("ul"|"ol", counter)
+        self._lists = []       # {"kind": "ul"|"ol", "counter": n}
         self._quote_depth = 0
         self._pre_text = None
         self._pre_lang = None
@@ -50,6 +50,101 @@ class MdRenderer(html.parser.HTMLParser):
             if tag in self._inline:
                 return tag
         return None
+
+    def _current_list_item(self):
+        """Return the nearest open list item, if any."""
+
+        for entry in reversed(self._stack):
+            if entry.get("kind") == "li":
+                return entry
+        return None
+
+    def _next_list_prefix(self):
+        """Allocate the prefix for a list item when the item starts.
+
+        Prefixes used to be allocated when ``</li>`` was seen.  That worked
+        for tight list items, but loose items contain nested ``<p>`` blocks;
+        their text was emitted before the delayed prefix.  Allocating it at
+        ``<li>`` start keeps the prefix attached to the item's content.
+        """
+
+        if not self._lists:
+            return "• "
+        current = self._lists[-1]
+        if current["kind"] == "ol":
+            current["counter"] += 1
+            return f"{current['counter']}. "
+        return "• "
+
+    @staticmethod
+    def _normalize_list_runs(runs):
+        """Remove structural indentation from list-item continuation text."""
+
+        normalized = []
+        at_line_start = True
+        for text, inline in runs:
+            if not text:
+                continue
+            output = []
+            index = 0
+            while index < len(text):
+                if at_line_start:
+                    while index < len(text) and text[index] in " \t":
+                        index += 1
+                    if index == len(text):
+                        at_line_start = True
+                        break
+                    at_line_start = False
+                newline = text.find("\n", index)
+                if newline < 0:
+                    output.append(text[index:])
+                    index = len(text)
+                else:
+                    output.append(text[index:newline + 1])
+                    index = newline + 1
+                    at_line_start = True
+            value = "".join(output)
+            if value:
+                normalized.append((value, inline))
+            if text.endswith("\n"):
+                at_line_start = True
+        return normalized
+
+    @classmethod
+    def _append_list_paragraph(cls, item, runs):
+        """Append one nested list paragraph to its parent ``<li>``.
+
+        The line model has one entry per list item, so paragraph boundaries
+        become a single compact newline inside that item.  This also means
+        the renderer can place the list prefix exactly once, before the first
+        paragraph.
+        """
+
+        runs = cls._normalize_list_runs(runs)
+        if not runs:
+            return
+        if item["runs"]:
+            item["runs"].append(("\n", None))
+        item["runs"].extend(runs)
+
+    def _append_data(self, data, *, explicit_break=False):
+        """Append text while dropping HTML-only whitespace around blocks."""
+
+        top = self._stack[-1] if self._stack else None
+        if top and top.get("runs") is not None:
+            # markdown.markdown emits indentation/newline-only data between
+            # block tags inside loose list items.  It is not user content and
+            # must not become several empty GTK lines.  Preserve ordinary
+            # spaces (for example between two inline tags), and preserve
+            # explicit ``<br>`` breaks.
+            if (
+                not explicit_break
+                and top.get("kind") == "li"
+                and "\n" in data
+                and not data.strip()
+            ):
+                return
+            top["runs"].append((data, self._eff_tag()))
 
     def handle_starttag(self, tag, attrs):
         if self._pre_text is not None:
@@ -78,19 +173,32 @@ class MdRenderer(html.parser.HTMLParser):
                 "kind": "h" if match else "p",
                 "level": int(match.group(1)) if match else 0,
                 "runs": [],
+                "list_item": self._current_list_item(),
             })
         elif tag == "li":
-            self._stack.append({"kind": "li", "runs": []})
+            self._stack.append({
+                "kind": "li",
+                "runs": [],
+                "prefix": self._next_list_prefix(),
+            })
         elif tag == "blockquote":
             self._quote_depth += 1
         elif tag == "ul":
-            self._lists.append(("ul", 0))
+            self._lists.append({"kind": "ul", "counter": 0})
         elif tag == "ol":
-            self._lists.append(("ol", 0))
+            start = 1
+            for key, value in attrs:
+                if key == "start":
+                    try:
+                        start = int(value)
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            self._lists.append({"kind": "ol", "counter": start - 1})
         elif tag == "hr":
             self.lines.append(("hr",))
         elif tag == "br":
-            self.handle_data("\n")
+            self._append_data("\n", explicit_break=True)
         elif tag in self.INLINE:
             self._inline.append(tag)
 
@@ -131,7 +239,9 @@ class MdRenderer(html.parser.HTMLParser):
         top = self._stack[-1]
         if tag == "p" or self.HEADING.fullmatch(tag or ""):
             if top.get("runs"):
-                if top["kind"] == "h":
+                if top.get("list_item") is not None:
+                    self._append_list_paragraph(top["list_item"], top["runs"])
+                elif top["kind"] == "h":
                     self.lines.append(("h", top["level"], top["runs"]))
                 elif self._quote_depth:
                     self.lines.append(("quote", top["runs"]))
@@ -140,12 +250,11 @@ class MdRenderer(html.parser.HTMLParser):
             self._stack.pop()
         elif tag == "li":
             if top.get("runs"):
-                if self._lists and self._lists[-1][0] == "ol":
-                    self._lists[-1] = ("ol", self._lists[-1][1] + 1)
-                    prefix = f"{self._lists[-1][1]}. "
-                else:
-                    prefix = "• "
-                self.lines.append(("li", top["runs"], prefix))
+                self.lines.append((
+                    "li",
+                    self._normalize_list_runs(top["runs"]),
+                    top.get("prefix", "• "),
+                ))
             self._stack.pop()
 
     def handle_data(self, data):
@@ -156,9 +265,7 @@ class MdRenderer(html.parser.HTMLParser):
             if self._table["cur_cell"] is not None:
                 self._table["cur_cell"] += data
             return
-        top = self._stack[-1] if self._stack else None
-        if top and top.get("runs") is not None:
-            top["runs"].append((data, self._eff_tag()))
+        self._append_data(data)
 
 
 def table_grid(rows):

@@ -54,6 +54,57 @@ class MdRendererTests(unittest.TestCase):
             ],
         )
 
+    def test_loose_list_items_keep_nested_paragraphs_with_their_prefix(self):
+        self.assertEqual(
+            self.parse(
+                '<ol>\n'
+                '<li>\n'
+                '<p><strong>first</strong></p>\n'
+                '<p>explanation</p>\n'
+                '</li>\n'
+                '<li>\n'
+                '<p>second</p>\n'
+                '<p>more detail</p>\n'
+                '</li>\n'
+                '</ol>'
+            ),
+            [
+                ("li", [
+                    ("first", "strong"),
+                    ("\n", None),
+                    ("explanation", None),
+                ], "1. "),
+                ("li", [
+                    ("second", None),
+                    ("\n", None),
+                    ("more detail", None),
+                ], "2. "),
+            ],
+        )
+
+    def test_ordered_list_start_attribute_is_respected(self):
+        self.assertEqual(
+            self.parse('<ol start="4"><li>four</li><li>five</li></ol>'),
+            [
+                ("li", [("four", None)], "4. "),
+                ("li", [("five", None)], "5. "),
+            ],
+        )
+
+    def test_list_continuation_indentation_is_normalized(self):
+        self.assertEqual(
+            self.parse(
+                '<ol><li><strong>title</strong>\n\n'
+                '    explanation</li></ol>'
+            ),
+            [
+                ("li", [
+                    ("title", "strong"),
+                    ("\n\nexplanation", None),
+                ], "1. "),
+            ],
+        )
+
     def test_fenced_code_captures_language_and_strips_newline(self):
         self.assertEqual(
             self.parse('<pre><code class="language-python">print(1)\n</code></pre>'),

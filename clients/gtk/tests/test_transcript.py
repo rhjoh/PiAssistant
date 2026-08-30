@@ -12,12 +12,14 @@ from gi.repository import Gdk, Gtk, Pango
 
 from clients.gtk.config import (
     BG_COLOR,
+    QUEUE_ICON,
     THINKING_BLOCK_BG_COLOR,
     THINKING_COLOR,
     THINKING_HEAD_COLOR,
     TOOL_ARG_COLOR,
     TOOL_BLOCK_BG_COLOR,
     TOOL_ERROR_BG_COLOR,
+    TOOL_ICON,
     TOOL_META_COLOR,
     TOOL_NAME_COLOR,
     TOOL_SUCCESS_BG_COLOR,
@@ -214,7 +216,7 @@ class TranscriptControllerTests(unittest.TestCase):
                         rgba_of(bg),
                     )
             names = (
-                "user", "tool-output", "error", "system", "md-code",
+                "user", "tool-output", "system", "md-code",
                 "md-pre-lang", "syn-keyword", "syn-comment", "md-quote",
                 "md-table", "md-link", "md-hr", "stream-cursor",
             )
@@ -223,6 +225,7 @@ class TranscriptControllerTests(unittest.TestCase):
                     self.assertFalse(
                         tags.lookup(name).get_property("foreground-set")
                     )
+            self.assertTrue(tags.lookup("error").get_property("foreground-set"))
         finally:
             controller.stop()
 
@@ -501,6 +504,67 @@ class TranscriptControllerTests(unittest.TestCase):
         finally:
             controller.stop()
 
+    def test_loose_ordered_markdown_is_compact_and_numbered_before_content(self):
+        controller = self.make_controller()
+        try:
+            controller.render_markdown(
+                "1. **Check**\n\n"
+                "    This is detail.\n\n"
+                "2. **Set aside**\n\n"
+                "    Already calendar."
+            )
+
+            self.assertEqual(
+                _text(controller.buffer),
+                "1. Check\n"
+                "This is detail.\n"
+                "2. Set aside\n"
+                "Already calendar.\n",
+            )
+        finally:
+            controller.stop()
+
+    def test_list_continuations_align_after_their_marker(self):
+        window = Gtk.Window()
+        window.set_default_size(600, 240)
+        scroller = Gtk.ScrolledWindow()
+        window.add(scroller)
+        controller = self.make_controller()
+        scroller.add(controller.view)
+        window.show_all()
+        try:
+            controller.render_markdown(
+                "1. **Check**\n\n"
+                "    This is detail."
+            )
+            controller._ensure_block_gap()
+            controller.render_markdown(
+                "10. **A longer-numbered item**\n\n"
+                "    More detail."
+            )
+            self.drain_gtk_events()
+
+            text = _text(controller.buffer)
+            self.assertIn("10. A longer-numbered item", text)
+            check_x = controller.view.get_iter_location(
+                controller.buffer.get_iter_at_offset(text.index("Check"))
+            ).x
+            detail_x = controller.view.get_iter_location(
+                controller.buffer.get_iter_at_offset(text.index("This"))
+            ).x
+            longer_x = controller.view.get_iter_location(
+                controller.buffer.get_iter_at_offset(text.index("A longer"))
+            ).x
+            more_x = controller.view.get_iter_location(
+                controller.buffer.get_iter_at_offset(text.index("More"))
+            ).x
+            self.assertEqual(detail_x, check_x)
+            self.assertEqual(more_x, longer_x)
+        finally:
+            window.destroy()
+            controller.stop()
+            self.drain_gtk_events()
+
     def test_done_repairs_missing_final_text_suffix_without_reloading_history(self):
         controller = self.make_controller()
         try:
@@ -655,6 +719,36 @@ class TranscriptControllerTests(unittest.TestCase):
             controller.clear()
             controller.handle_message("user_message", {"content": "from gateway"})
             self.assertEqual(_text(controller.buffer), "from gateway\n")
+        finally:
+            controller.stop()
+
+    def test_history_replaces_existing_transcript(self):
+        controller = self.make_controller()
+        try:
+            controller.append_user("old")
+            controller.load_history([{"role": "user", "content": "new"}])
+            self.assertEqual(_text(controller.buffer), "new\n")
+        finally:
+            controller.stop()
+
+    def test_notify_and_extension_errors_use_error_or_system_surfaces(self):
+        controller = self.make_controller()
+        try:
+            controller.handle_message("notify", {
+                "message": "quota exceeded",
+                "notifyType": "error",
+            })
+            controller.handle_message("extension_error", {
+                "message": "boom",
+                "extensionPath": "/tmp/question.ts",
+            })
+            text = _text(controller.buffer)
+            self.assertIn("quota exceeded", text)
+            self.assertIn("/tmp/question.ts: boom", text)
+            error_tag = controller.buffer.get_tag_table().lookup("error")
+            self.assertTrue(
+                controller.buffer.get_iter_at_offset(text.index("quota")).has_tag(error_tag)
+            )
         finally:
             controller.stop()
 
@@ -832,7 +926,7 @@ class TranscriptControllerTests(unittest.TestCase):
             controller.handle_message("tool_output", {"output": "total 48\nfile1\n"})
             controller.handle_message("tool_end", {"toolName": "bash"})
             text = _text(controller.buffer)
-            self.assertIn("⚙ bash", text)
+            self.assertIn(f"{TOOL_ICON} bash", text)
             self.assertIn("ls -la", text)
             self.assertNotIn("$ ls", text)
             self.assertIn("total 48", text)
@@ -1036,7 +1130,7 @@ class TranscriptControllerTests(unittest.TestCase):
                 },
             )
             text = _text(controller.buffer)
-            self.assertIn("⚙ bash", text)
+            self.assertIn(f"{TOOL_ICON} bash", text)
             self.assertIn("echo hi", text)
             self.assertNotIn("$ echo", text)
             self.assertIn("hi\n", text)
@@ -1083,8 +1177,8 @@ class TranscriptControllerTests(unittest.TestCase):
                 },
             )
             text = _text(controller.buffer)
-            self.assertIn("⏳ queued (steer) — do this instead", text)
-            self.assertIn("⏳ queued (follow-up) — then summarize", text)
+            self.assertIn(f"{QUEUE_ICON} queued (steer) — do this instead", text)
+            self.assertIn(f"{QUEUE_ICON} queued (follow-up) — then summarize", text)
         finally:
             controller.stop()
 
@@ -1110,7 +1204,7 @@ class TranscriptControllerTests(unittest.TestCase):
                 },
             )
             text = _text(controller.buffer)
-            self.assertNotIn("⏳ queued", text)
+            self.assertNotIn(f"{QUEUE_ICON} queued", text)
             self.assertIn("redirect now\n", text)
         finally:
             controller.stop()
@@ -1126,7 +1220,7 @@ class TranscriptControllerTests(unittest.TestCase):
                 },
             )
             controller.handle_message("queue_update", {"steering": [], "followUp": []})
-            self.assertNotIn("⏳ queued", _text(controller.buffer))
+            self.assertNotIn(f"{QUEUE_ICON} queued", _text(controller.buffer))
         finally:
             controller.stop()
 

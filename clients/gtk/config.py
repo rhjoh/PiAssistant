@@ -8,7 +8,53 @@ GTK_LOG_PATH = "~/personal_assistant/logs/gtk.log"
 DEFAULT_WINDOW_WIDTH = 780
 DEFAULT_WINDOW_HEIGHT = 540
 
-TRANSCRIPT_FONT = "JetBrainsMono Nerd Font 13"
+TRANSCRIPT_FONT = "JetBrainsMonoNL Nerd Font 13"
+# Nerd Font PUA icons. The Unicode originals (⚙ ⏳ 💬 ⧉) are not in this
+# family and fall back to color emoji.
+TOOL_ICON = "\uf013"  # nf-fa-cog
+QUEUE_ICON = "\uf254"  # nf-fa-hourglass
+PROACTIVE_ICON = "\uf075"  # nf-fa-comment
+COPIED_ICON = "\uf0c5"  # nf-fa-copy
+
+
+def transcript_font_family(font=TRANSCRIPT_FONT):
+    """Family name from a Pango ``Family Size`` description."""
+
+    return font.rpartition(" ")[0]
+
+
+def transcript_font_size_pt(font=TRANSCRIPT_FONT):
+    """Point size from a Pango ``Family Size`` description."""
+
+    return int(font.rpartition(" ")[2])
+
+
+def transcript_font_css(font=TRANSCRIPT_FONT):
+    """CSS font rule matching a Pango ``Family Size`` description.
+
+    GTK 3 paints ``GtkTextView`` through the inner ``textview text`` CSS node,
+    so the family has to be set with the ``font`` shorthand (not deprecated
+    ``override_font``).  Ligatures are avoided by using the NL (no-ligature)
+    cut of the Nerd Font; italic ``**`` otherwise becomes a dotted glyph.
+    """
+
+    family = transcript_font_family(font)
+    size = transcript_font_size_pt(font)
+    return f'font: {size}pt "{family}";'
+
+
+def apply_transcript_font(widget, font=TRANSCRIPT_FONT):
+    """Pin the transcript family on the widget's Pango context.
+
+    CSS can lose to the theme on the inner text node; the layout context is
+    what ``GtkTextView`` actually uses to shape glyphs.
+    """
+
+    from gi.repository import Pango
+
+    widget.get_pango_context().set_font_description(
+        Pango.FontDescription.from_string(font)
+    )
 
 USER_BAND_INSET = 16
 USER_BAR_WIDTH = 6

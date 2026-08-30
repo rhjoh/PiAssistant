@@ -11,7 +11,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Pango
 
 try:  # Direct executable invocation: ``./agent-gui.py``.
-    from config import CODE_MARGIN
+    from config import CODE_MARGIN, TRANSCRIPT_FONT
     from markdown_renderer import (
         MdRenderer,
         highlight_code,
@@ -19,7 +19,7 @@ try:  # Direct executable invocation: ``./agent-gui.py``.
         table_grid,
     )
 except ImportError:  # Package import from the repository test runner.
-    from .config import CODE_MARGIN
+    from .config import CODE_MARGIN, TRANSCRIPT_FONT
     from .markdown_renderer import (
         MdRenderer,
         highlight_code,
@@ -44,6 +44,32 @@ class MarkdownBufferRenderer:
         self.view = view
         self.add_copy_button = add_copy_button
         self._code_tab_width = None
+        self._list_tag_names = {}
+
+    def _list_tag_name(self, prefix):
+        """Return a hanging-indent tag sized to this list prefix."""
+
+        try:
+            layout = self.view.create_pango_layout(prefix)
+            layout.set_font_description(
+                Pango.FontDescription.from_string(TRANSCRIPT_FONT)
+            )
+            width = layout.get_pixel_size()[0]
+        except Exception:
+            # Rendering should remain usable even if a custom/embedded view
+            # cannot create a layout yet.  The transcript font is monospace,
+            # so this is a conservative fallback until the view is realized.
+            width = len(prefix) * 8
+        width = max(1, int(width))
+        tag_name = self._list_tag_names.get(width)
+        if tag_name is not None:
+            return tag_name
+
+        tag_name = f"md-li-hanging-{width}"
+        if self.buffer.get_tag_table().lookup(tag_name) is None:
+            self.buffer.create_tag(tag_name, left_margin=width)
+        self._list_tag_names[width] = tag_name
+        return tag_name
 
     def emit_runs(self, runs, extra=(), at=None):
         end = at if at is not None else self.buffer.get_end_iter()
@@ -83,7 +109,11 @@ class MarkdownBufferRenderer:
                     self.emit_runs(line[2], extra=(f"md-h{line[1]}",), at=cur)
                 elif kind == "li":
                     self.buffer.insert(cur, line[2])
-                    self.emit_runs(line[1], extra=("md-li",), at=cur)
+                    self.emit_runs(
+                        line[1],
+                        extra=("md-li", self._list_tag_name(line[2])),
+                        at=cur,
+                    )
                 elif kind == "quote":
                     self.emit_runs(line[1], extra=("md-quote",), at=cur)
                 elif kind == "pre":

@@ -115,6 +115,7 @@ class GatewayClientTests(unittest.TestCase):
             "ws://test.invalid/",
             connect_factory=connect_factory,
             dispatch=lambda callback: callback(),
+            reconnect=False,
             **callbacks,
         )
         return client, uris
@@ -204,6 +205,7 @@ class GatewayClientTests(unittest.TestCase):
                 connect_factory=connect_factory,
                 dispatch=lambda callback: callback(),
                 on_error=errors.append,
+                reconnect=False,
             )
         )
         self.assertTrue(client.start())
@@ -211,6 +213,35 @@ class GatewayClientTests(unittest.TestCase):
         self.assertEqual(attempts, ["ws://test.invalid/"])
         self.assertEqual(errors, ["gateway unavailable"])
         self.assertFalse(client.start())
+
+    def test_reconnects_after_the_first_connection_failure(self):
+        websocket = FakeWebSocket()
+        attempts: list[str] = []
+        connected = threading.Event()
+
+        def connect_factory(uri: str):
+            attempts.append(uri)
+            if len(attempts) == 1:
+                return FailingConnect()
+            return FakeConnect(websocket)
+
+        client = self.track(
+            GatewayClient(
+                "ws://test.invalid/",
+                connect_factory=connect_factory,
+                dispatch=lambda callback: callback(),
+                on_connected=lambda: connected.set(),
+                reconnect=True,
+                reconnect_min_delay=0.01,
+                reconnect_max_delay=0.01,
+            )
+        )
+        self.assertTrue(client.start())
+        self.assertTrue(connected.wait(2))
+        wait_for(lambda: len(websocket.sent_snapshot()) >= 1)
+        self.assertGreaterEqual(len(attempts), 2)
+        client.close()
+        self.assertTrue(client.wait_closed(1))
 
     def test_initial_history_send_failure_reports_error_and_stops(self):
         websocket = FailingSendWebSocket()

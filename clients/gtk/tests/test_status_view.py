@@ -63,6 +63,21 @@ class ConnectionStatusTests(unittest.TestCase):
             '<span alpha="55%">connected &lt;requesting&gt;</span>',
         )
 
+    def test_working_activity_is_rendered_in_connected_status(self):
+        self.status.set_conn_status("●", "connected", True)
+        self.status.set_model_name("provider/model")
+        self.status.set_working("Compacting context…")
+
+        self.assertIn("provider/model · Compacting context…", self.label.markup)
+
+    def test_working_clears_when_empty(self):
+        self.status.set_conn_status("●", "connected", True)
+        self.status.set_model_name("provider/model")
+        self.status.set_working("Retrying…")
+        self.status.set_working(None)
+
+        self.assertNotIn("Retrying", self.label.markup)
+
     def test_disconnected_status_dot_is_red(self):
         self.status.set_conn_status("✗", "disconnected — boom", False)
 
@@ -87,15 +102,15 @@ class ConnectionStatusTests(unittest.TestCase):
         self.status.set_model_name("provider/model")
         self.status.set_usage({"total": 151489})
 
-        self.assertIn("provider/model · 151,489 tok", self.label.markup)
+        self.assertIn("provider/model · 151k tok", self.label.markup)
 
     def test_context_usage_is_rendered_with_context_window(self):
         self.status.set_conn_status("●", "connected", True)
         self.status.set_model_name("provider/model")
         self.status.set_context_window(1000000)
-        self.status.set_usage({"contextTokens": 151489, "total": 999999})
+        self.status.set_usage({"contextTokens": 139888, "total": 999999})
 
-        self.assertIn("provider/model · 151,489/1,000,000 tok", self.label.markup)
+        self.assertIn("provider/model · 140k/1,000k tok", self.label.markup)
         self.assertNotIn("999,999", self.label.markup)
 
     def test_thinking_level_is_rendered_and_escaped(self):

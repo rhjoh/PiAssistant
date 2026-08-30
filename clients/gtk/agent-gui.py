@@ -8,7 +8,7 @@ an If/ForEach run-or-raise rule. toggle.sh is its launch fallback.
 Lock-key behavior: focused -> minimize; otherwise (open but unfocused, or
 minimized, on any workspace) -> brought onto the current workspace and
 focused. Ctrl+T inside the app toggles thinking blocks; Ctrl+O collapses
-or expands tool-call blocks (which keep their amber "⚙ tool  args" summary
+or expands tool-call blocks (which keep their amber tool-name summary
 line while collapsed).
 
 Minimizing uses iconify and restoring is handled by labwc without unmapping
@@ -22,12 +22,14 @@ Wayland notes (copied from key-test-window.py):
   - The compositor owns placement; client-side move()/position hints are ignored.
 
 Talks to the gateway over the standard WebSocket API (ws://127.0.0.1:3456/):
-  client -> gateway: prompt (with streamingBehavior when busy), get_history
+  client -> gateway: prompt (with streamingBehavior when busy), get_history,
+                     get_state, extension_ui_response, abort, command
   gateway -> client: connection, user_message, text_delta, thinking_delta,
                      thinking_done, tool_start, tool_output, tool_end, done,
                      response_segment_done, queue_update, prompt_accepted,
-                     prompt_queued, abort_complete,
-                     error, state, proactive, history
+                     prompt_queued, abort_complete, error, notify,
+                     extension_error, extension_ui_request,
+                     extension_ui_resolved, state, proactive, history
 
 While the assistant is processing, Enter steers the active run and Alt+Enter
 queues a follow-up; Esc-Esc aborts (first Esc arms the confirmation, a
@@ -62,10 +64,21 @@ from config import (
     GTK_LOG_PATH,
     INPUT_BG_COLOR,
     SELECTION_BG_COLOR,
+    STATUS_ERR_COLOR,
     TEXT_COLOR,
-    TRANSCRIPT_FONT,
+    THINKING_HEAD_COLOR,
+    transcript_font_css,
+    apply_transcript_font,
 )
-from protocol import is_pending_duplicate, model_name, prompt_payload
+from protocol import is_pending_duplicate, model_name, prompt_payload, session_id
+from extension_ui import (
+    dialog_options,
+    dialog_title,
+    extension_ui_response,
+    is_dialog_method,
+    response_for_option,
+    working_text,
+)
 from model_picker import matching_models
 from instance_lock import InstanceLock
 from status_view import ConnectionStatus
@@ -100,23 +113,15 @@ def _configure_logging():
 def _install_style():
     """Apply the client palette: dark surfaces with whitish text.
 
-    GTK themes style the internal ``textview text`` node separately from the
-    widget, give it a different color in the ``:backdrop`` state, and paint
-    every surface with the theme's base colour.  The selectors below pin all
-    text widgets to the client foreground/background in both states so no
-    theme colour leaks through, and give selections a background that keeps
-    the whitish text readable.  Thinking blocks are dimmed separately via
-    their TextTags (see TranscriptController).
+    GTK themes style the inner ``textview text`` node separately from the
+    widget.  The selectors below pin colour, background, and the transcript
+    font on that node so Inter and ligature substitutions cannot leak in.
+    Opacity is not set on text views: it forces an offscreen flatten that
+    stipples glyphs into a dotted gutter.  Thinking blocks are dimmed via
+    TextTags (see TranscriptController).
     """
+    font = transcript_font_css()
     css = f"""
-        *,
-        *:backdrop,
-        textview text,
-        textview text:backdrop,
-        entry,
-        entry:backdrop,
-        entry text,
-        entry text:backdrop,
         label,
         label:backdrop,
         button,
@@ -128,9 +133,31 @@ def _install_style():
             color: {TEXT_COLOR};
             opacity: 1;
         }}
+        textview,
+        textview:backdrop,
+        textview text,
+        textview text:backdrop,
+        entry,
+        entry:backdrop,
+        entry text,
+        entry text:backdrop {{
+            color: {TEXT_COLOR};
+        }}
         window,
         window:backdrop {{
             background-color: {BG_COLOR};
+        }}
+        textview,
+        textview:backdrop,
+        textview text,
+        textview text:backdrop,
+        entry,
+        entry:backdrop,
+        entry text,
+        entry text:backdrop,
+        #prompt-placeholder,
+        #prompt-placeholder:backdrop {{
+            {font}
         }}
         textview,
         textview:backdrop,
@@ -173,6 +200,21 @@ def _install_style():
             background-color: {INPUT_BG_COLOR};
             background: {INPUT_BG_COLOR};
         }}
+        #working-banner {{
+            color: {THINKING_HEAD_COLOR};
+            padding: 4px 2px;
+        }}
+        #extension-ui {{
+            background-color: {INPUT_BG_COLOR};
+            padding: 8px;
+        }}
+        #extension-ui-title {{
+            color: {TEXT_COLOR};
+            font-weight: bold;
+        }}
+        #extension-ui-cancel {{
+            color: {STATUS_ERR_COLOR};
+        }}
         #copy-button {{
             min-height: 0;
             min-width: 0;
@@ -180,12 +222,19 @@ def _install_style():
             border: none;
             background: transparent;
         }}
+        .monospace {{
+            {font}
+        }}
     """
     provider = Gtk.CssProvider()
-    provider.load_from_data(css.encode())
+    try:
+        provider.load_from_data(css.encode())
+    except GLib.Error as exc:
+        logger.error("GTK CSS failed to load: %s", exc)
+        return
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
 GLib.set_prgname(APP_ID)
 
@@ -227,6 +276,11 @@ class AgentGui(Gtk.Window):
         # (never on explicit disarm), restoring the connected status line.
         self._abort_confirm = AbortConfirm(
             glib=GLib, on_disarm=self._clear_abort_hint)
+        self._session_id = None
+        self._extension_ui_request = None
+        self._extension_option_index = 0
+        self._extension_ui_list = None
+        self._extension_ui_input = None
         self._build_ui()
         self.connection_status = ConnectionStatus(self.status)
         self.connect("configure-event", self._on_window_configure)
@@ -249,8 +303,10 @@ class AgentGui(Gtk.Window):
             GATEWAY_URI,
             dispatch=lambda callback: GLib.idle_add(callback),
             on_connected=self._on_ws_connected,
+            on_disconnected=self._on_ws_disconnected,
             on_message=self._on_message,
             on_error=self._on_ws_error,
+            reconnect=True,
         )
         self.gateway.start()
 
@@ -276,6 +332,9 @@ class AgentGui(Gtk.Window):
         )
         self.buffer = self.transcript.buffer
         self.view = self.transcript.view
+        apply_transcript_font(self.view)
+        self.view.connect("realize", self._on_transcript_font_realize)
+        self.view.connect("style-updated", lambda w: apply_transcript_font(w))
         sw.add(self.view)
 
         row = Gtk.Box(spacing=6)
@@ -284,8 +343,9 @@ class AgentGui(Gtk.Window):
         self.entry.set_name("prompt-entry")
         self.entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.entry.set_accepts_tab(False)
-        self.entry.override_font(
-            Pango.FontDescription.from_string(TRANSCRIPT_FONT))
+        apply_transcript_font(self.entry)
+        self.entry.connect("realize", lambda *_: apply_transcript_font(self.entry))
+        self.entry.connect("style-updated", lambda w: apply_transcript_font(w))
         self.entry.set_left_margin(8)
         self.entry.set_right_margin(8)
         self.entry.set_top_margin(6)
@@ -313,8 +373,7 @@ class AgentGui(Gtk.Window):
         self._prompt_placeholder.set_valign(Gtk.Align.START)
         self._prompt_placeholder.set_margin_start(9)
         self._prompt_placeholder.set_margin_top(7)
-        self._prompt_placeholder.override_font(
-            Pango.FontDescription.from_string(TRANSCRIPT_FONT))
+        apply_transcript_font(self._prompt_placeholder)
 
         prompt_overlay = Gtk.Overlay()
         prompt_overlay.add(entry_scroll)
@@ -335,6 +394,34 @@ class AgentGui(Gtk.Window):
         self._cmd_list.set_can_focus(False)
         self._cmd_list.connect("row-activated", self._on_cmd_row_activated)
         self._cmd_list.set_no_show_all(True)
+
+        self._working_banner = Gtk.Label(xalign=0)
+        self._working_banner.set_name("working-banner")
+        self._working_banner.get_style_context().add_class("monospace")
+        self._working_banner.set_line_wrap(True)
+        self._working_banner.set_halign(Gtk.Align.START)
+        self._working_banner.set_no_show_all(True)
+
+        # Extension prompts can contain an entire shell command.  Keep the
+        # panel bounded so a long permission request cannot push its option
+        # rows below the window, and make the whole request vertically
+        # scrollable so the user can still inspect every line before choosing.
+        self._extension_ui_scroll = Gtk.ScrolledWindow()
+        self._extension_ui_scroll.set_name("extension-ui")
+        self._extension_ui_scroll.set_policy(
+            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._extension_ui_scroll.set_overlay_scrolling(False)
+        self._extension_ui_scroll.set_propagate_natural_height(True)
+        self._extension_ui_scroll.set_min_content_height(96)
+        self._extension_ui_scroll.set_max_content_height(240)
+        self._extension_ui_scroll.set_no_show_all(True)
+
+        self._extension_ui = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._extension_ui_scroll.add(self._extension_ui)
+
+        vbox.pack_start(self._working_banner, False, False, 0)
+        vbox.pack_start(self._extension_ui_scroll, False, False, 0)
         vbox.pack_start(self._cmd_list, False, False, 0)
         vbox.pack_start(row, False, False, 0)
         self.entry_buffer.connect("changed", self._on_prompt_changed)
@@ -350,7 +437,16 @@ class AgentGui(Gtk.Window):
         row.pack_start(close, False, False, 0)
 
         self.status = Gtk.Label(label="connecting…", xalign=0)
+        self.status.get_style_context().add_class("monospace")
         vbox.pack_start(self.status, False, False, 0)
+
+    def _on_transcript_font_realize(self, view):
+        apply_transcript_font(view)
+        desc = view.get_pango_context().get_font_description()
+        logger.info(
+            "transcript font %s",
+            desc.to_string() if desc is not None else "unset",
+        )
 
     def _on_destroy(self, _w):
         self.window_state_store.save(WindowState(
@@ -421,6 +517,9 @@ class AgentGui(Gtk.Window):
             # the window, including when the transcript view has focus.
             if self._cmd_matches:
                 self._hide_command_suggestions()
+                return True
+            if self._extension_ui_request:
+                self._cancel_extension_ui()
                 return True
             if self._processing:
                 return self._handle_abort_escape()
@@ -1002,6 +1101,16 @@ class AgentGui(Gtk.Window):
                 return True
 
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if self._extension_ui_request:
+                method = self._extension_ui_request.get("method")
+                if method in ("select", "confirm"):
+                    options = dialog_options(self._extension_ui_request)
+                    if options:
+                        index = min(self._extension_option_index, len(options) - 1)
+                        self._choose_extension_option(options[index])
+                    return True
+                self._submit_extension_input()
+                return True
             shift = (event.state & Gdk.ModifierType.SHIFT_MASK) != 0
             alt = (event.state & Gdk.ModifierType.MOD1_MASK) != 0
             if shift:
@@ -1023,6 +1132,19 @@ class AgentGui(Gtk.Window):
             self._send()
             return True
 
+        if self._extension_ui_request and self._extension_ui_request.get("method") in ("select", "confirm"):
+            options = dialog_options(self._extension_ui_request)
+            if options and event.keyval == Gdk.KEY_Down:
+                self._extension_option_index = (
+                    self._extension_option_index + 1) % len(options)
+                self._select_extension_option()
+                return True
+            if options and event.keyval == Gdk.KEY_Up:
+                self._extension_option_index = (
+                    self._extension_option_index - 1) % len(options)
+                self._select_extension_option()
+                return True
+
         if not self._cmd_matches:
             return False
 
@@ -1043,6 +1165,9 @@ class AgentGui(Gtk.Window):
             if self._cmd_matches:
                 self._hide_command_suggestions()
                 return True
+            if self._extension_ui_request:
+                self._cancel_extension_ui()
+                return True
             if self._processing:
                 return self._handle_abort_escape()
             return True
@@ -1056,6 +1181,202 @@ class AgentGui(Gtk.Window):
             "●", "connected — requesting history…", True)
         self.gateway.send({"type": "get_state"})
 
+    def _on_ws_disconnected(self, reason):
+        self._hide_extension_ui()
+        self._set_processing(False)
+        self._set_working_banner(None)
+        self.connection_status.set_working(None)
+        suffix = f" — reconnecting… ({reason})" if reason else " — reconnecting…"
+        self.connection_status.set_conn_status("✗", "disconnected" + suffix, False)
+
+    def _apply_gateway_state(self, data):
+        incoming_session = session_id(data)
+        if incoming_session and incoming_session != self._session_id:
+            if self._session_id is not None:
+                self.transcript.clear()
+                self._hide_extension_ui()
+            self._session_id = incoming_session
+
+        model = data.get("model") or {}
+        if model.get("provider") and model.get("id"):
+            self._current_model = model
+        if model.get("name"):
+            self.connection_status.set_model_name(model.get("name"))
+        elif model.get("provider") and model.get("id"):
+            self.connection_status.set_model_name(
+                f"{model.get('provider')}/{model.get('id')}")
+        if data.get("thinkingLevel"):
+            self._current_thinking_level = data.get("thinkingLevel")
+            self.connection_status.set_thinking_level(
+                data.get("thinkingLevel"))
+        if isinstance(data.get("availableThinkingLevels"), list):
+            self._available_thinking_levels = [
+                level for level in data.get("availableThinkingLevels")
+                if level in KNOWN_THINKING_LEVELS
+            ]
+        if data.get("contextWindow") is not None:
+            self.connection_status.set_context_window(
+                data.get("contextWindow"))
+        if "isProcessing" in data:
+            self._set_processing(bool(data.get("isProcessing")))
+        if data.get("contextTokens") is not None:
+            self.connection_status.set_usage(
+                {"contextTokens": data.get("contextTokens")})
+
+        activity = working_text(data)
+        self.connection_status.set_working(activity)
+        self._set_working_banner(activity)
+
+        if "pendingExtensionUi" in data:
+            pending = data.get("pendingExtensionUi")
+            if pending and is_dialog_method(pending.get("method")):
+                self._show_extension_ui(pending)
+            else:
+                self._hide_extension_ui()
+
+    def _set_working_banner(self, text):
+        if text:
+            self._working_banner.set_text(text)
+            self._working_banner.show()
+        else:
+            self._working_banner.hide()
+            self._working_banner.set_text("")
+
+    def _clear_extension_ui_widgets(self):
+        for child in list(self._extension_ui.get_children()):
+            self._extension_ui.remove(child)
+
+    def _hide_extension_ui(self):
+        self._extension_ui_request = None
+        self._extension_option_index = 0
+        self._extension_ui_list = None
+        self._extension_ui_input = None
+        self._clear_extension_ui_widgets()
+        self._extension_ui_scroll.hide()
+
+    def _show_extension_ui(self, request):
+        if not request or not request.get("id"):
+            return
+        if (
+            self._extension_ui_request
+            and self._extension_ui_request.get("id") == request.get("id")
+        ):
+            return
+        # Gateway ``working`` repeats the dialog title, which for permission
+        # gates is often the full command.  The scrollable panel below already
+        # shows that text; keep the surrounding layout compact and the status
+        # line useful instead of rendering the command twice.
+        self.connection_status.set_working("Waiting for your answer")
+        self._set_working_banner(None)
+        self._extension_ui_request = dict(request)
+        self._extension_option_index = 0
+        self._clear_extension_ui_widgets()
+
+        title = Gtk.Label(label=dialog_title(request), xalign=0)
+        title.set_name("extension-ui-title")
+        title.set_line_wrap(True)
+        title.set_halign(Gtk.Align.START)
+        self._extension_ui.pack_start(title, False, False, 0)
+
+        method = request.get("method")
+        if method in ("select", "confirm"):
+            options = dialog_options(request)
+            option_list = Gtk.ListBox()
+            option_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+            option_list.set_activate_on_single_click(True)
+            option_list.set_can_focus(False)
+            option_list.connect(
+                "row-activated",
+                lambda _list, row, opts=options: self._choose_extension_option(
+                    opts[row.get_index()] if 0 <= row.get_index() < len(opts) else None
+                ),
+            )
+            for option in options:
+                label = Gtk.Label(label=option, xalign=0)
+                label.set_line_wrap(True)
+                row = Gtk.ListBoxRow()
+                row.add(label)
+                option_list.add(row)
+            self._extension_ui_list = option_list
+            self._extension_ui.pack_start(option_list, False, False, 0)
+        else:
+            entry = Gtk.TextView() if method == "editor" else Gtk.Entry()
+            if method == "editor":
+                entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+                prefill = request.get("prefill") or ""
+                entry.get_buffer().set_text(prefill)
+                entry.set_size_request(-1, 72)
+            else:
+                entry.set_placeholder_text(request.get("placeholder") or "")
+                entry.connect("activate", lambda _w: self._submit_extension_input())
+            self._extension_ui_input = entry
+            self._extension_ui.pack_start(entry, False, False, 0)
+            submit = Gtk.Button(label="Submit")
+            submit.connect("clicked", lambda _b: self._submit_extension_input())
+            self._extension_ui.pack_start(submit, False, False, 0)
+
+        cancel = Gtk.Button(label="Cancel")
+        cancel.set_name("extension-ui-cancel")
+        cancel.connect("clicked", lambda _b: self._cancel_extension_ui())
+        self._extension_ui.pack_start(cancel, False, False, 0)
+        self._extension_ui.show_all()
+        # no-show-all keeps the empty scroller hidden during the window's
+        # initial show_all(); reveal it explicitly once it has a request.
+        self._extension_ui_scroll.show()
+        # A new request should always start at its title, even if the previous
+        # prompt was dismissed while scrolled to its action rows.
+        self._extension_ui_scroll.get_vadjustment().set_value(0)
+        self._select_extension_option()
+
+    def _select_extension_option(self):
+        option_list = getattr(self, "_extension_ui_list", None)
+        if option_list is None:
+            return
+        rows = option_list.get_children()
+        if not rows:
+            return
+        index = min(max(self._extension_option_index, 0), len(rows) - 1)
+        option_list.select_row(rows[index])
+
+    def _choose_extension_option(self, option):
+        request = self._extension_ui_request
+        if not request or option is None:
+            return
+        payload = response_for_option(request, option)
+        if payload:
+            self.gateway.send(payload)
+        self._hide_extension_ui()
+
+    def _submit_extension_input(self):
+        request = self._extension_ui_request
+        if not request:
+            return
+        entry = getattr(self, "_extension_ui_input", None)
+        value = ""
+        if isinstance(entry, Gtk.Entry):
+            value = entry.get_text()
+        elif isinstance(entry, Gtk.TextView):
+            buf = entry.get_buffer()
+            value = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        self.gateway.send(extension_ui_response(request.get("id"), value=value))
+        self._hide_extension_ui()
+
+    def _cancel_extension_ui(self):
+        request = self._extension_ui_request
+        if request and request.get("id"):
+            self.gateway.send(extension_ui_response(request["id"], cancelled=True))
+        self._hide_extension_ui()
+
+    def _handle_extension_ui_request(self, data):
+        method = data.get("method")
+        if method == "set_editor_text":
+            self._set_prompt_text(data.get("text") or "")
+            return
+        if method == "setTitle":
+            self.set_title(data.get("title") or "Agent")
+            return
+        if is_dialog_method(method):
+            self._show_extension_ui(data)
 
     def _send(self, behavior=None):
         text = self._prompt_text().strip()
@@ -1131,6 +1452,15 @@ class AgentGui(Gtk.Window):
         if command == "clear":
             self.transcript.clear()
             return
+        if command == "new":
+            self.transcript.clear()
+            self._hide_extension_ui()
+            self._session_id = None
+            self.transcript.append_user(text, force_scroll=True)
+            msg = {"type": "command", "command": command, "args": args}
+            if not self.gateway.send(msg):
+                self.transcript.error("not connected to gateway")
+            return
         if (command == "model" and (not args or args == ["list"])):
             self._open_model_picker()
             return
@@ -1174,54 +1504,11 @@ class AgentGui(Gtk.Window):
         logger.info("recv type=%s%s", t, suffix)
 
         if t == "connection":
-            if data.get("model"):
-                self._current_model = data.get("model")
-            self.connection_status.set_model_name(
-                model_name(data.get("model")))
-            if data.get("thinkingLevel"):
-                self._current_thinking_level = data.get("thinkingLevel")
-                self.connection_status.set_thinking_level(
-                    data.get("thinkingLevel"))
-            if isinstance(data.get("availableThinkingLevels"), list):
-                self._available_thinking_levels = [
-                    level for level in data.get("availableThinkingLevels")
-                    if level in KNOWN_THINKING_LEVELS
-                ]
-            if data.get("contextWindow") is not None:
-                self.connection_status.set_context_window(
-                    data.get("contextWindow"))
             self.connection_status.set_conn_status("●", "connected", True)
-            self.connection_status.render()
-            self._set_processing(False)
+            self._apply_gateway_state(data)
 
         elif t == "state":
-            model = data.get("model") or {}
-            if model.get("provider") and model.get("id"):
-                self._current_model = model
-            # The gateway's prompt-start state message omits the model; keep
-            # the last-known name from the connection message instead of
-            # falling back to "?/?".
-            if model.get("name"):
-                self.connection_status.set_model_name(model.get("name"))
-            elif model.get("provider") and model.get("id"):
-                self.connection_status.set_model_name(
-                    f"{model.get('provider')}/{model.get('id')}")
-            if data.get("thinkingLevel"):
-                self._current_thinking_level = data.get("thinkingLevel")
-                self.connection_status.set_thinking_level(
-                    data.get("thinkingLevel"))
-            if isinstance(data.get("availableThinkingLevels"), list):
-                self._available_thinking_levels = [
-                    level for level in data.get("availableThinkingLevels")
-                    if level in KNOWN_THINKING_LEVELS
-                ]
-            if data.get("contextWindow") is not None:
-                self.connection_status.set_context_window(
-                    data.get("contextWindow"))
-            self._set_processing(bool(data.get("isProcessing")))
-            if data.get("contextTokens") is not None:
-                self.connection_status.set_usage(
-                    {"contextTokens": data.get("contextTokens")})
+            self._apply_gateway_state(data)
 
         elif t == "usage":
             self.connection_status.set_usage(data)
@@ -1291,7 +1578,26 @@ class AgentGui(Gtk.Window):
         elif t == "abort_complete":
             self._pending_submission = None
             self._set_processing(False)
+            self._hide_extension_ui()
+            self.connection_status.set_working(None)
+            self._set_working_banner(None)
             self.connection_status.set_status("Prompt aborted")
+            self.transcript.handle_message(t, data)
+
+        elif t == "extension_ui_request":
+            self._handle_extension_ui_request(data)
+
+        elif t == "extension_ui_resolved":
+            if (
+                self._extension_ui_request
+                and data.get("id") == self._extension_ui_request.get("id")
+            ):
+                self._hide_extension_ui()
+
+        elif t in ("error", "notify", "extension_error"):
+            if t == "error":
+                self._set_processing(False)
+                self._hide_extension_ui()
             self.transcript.handle_message(t, data)
 
         else:
@@ -1304,6 +1610,7 @@ class AgentGui(Gtk.Window):
             self.transcript.handle_message(t, data)
 
     def _on_ws_error(self, err):
+        self._set_processing(False)
         self.connection_status.set_conn_status(
             "✗", "disconnected — " + err, False)
         self.transcript.error(f"gateway error: {err}")

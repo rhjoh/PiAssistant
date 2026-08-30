@@ -7,6 +7,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
+from clients.gtk.config import transcript_font_css, transcript_font_family
 from clients.gtk.transcript_tags import (
     build_tag_specs,
     create_transcript_tags,
@@ -14,6 +15,7 @@ from clients.gtk.transcript_tags import (
 
 
 TAG_ORDER = (
+    "transcript-font",
     "block-gap",
     "user",
     "thinking",
@@ -62,6 +64,21 @@ class TranscriptTagsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         Gtk.init([])
+
+    def test_error_tag_uses_status_error_colour(self):
+        specs = build_tag_specs()
+        self.assertIn("foreground_rgba", specs["error"])
+
+    def test_tool_output_uses_transcript_font_family(self):
+        specs = build_tag_specs()
+        self.assertEqual(specs["tool-output"]["family"], transcript_font_family())
+        self.assertNotEqual(specs["tool-output"]["family"], "monospace")
+
+    def test_transcript_font_css_quotes_family_and_keeps_size(self):
+        self.assertEqual(
+            transcript_font_css("JetBrainsMonoNL Nerd Font 13"),
+            'font: 13pt "JetBrainsMonoNL Nerd Font";',
+        )
 
     def test_specs_preserve_creation_order(self):
         self.assertEqual(tuple(build_tag_specs()), TAG_ORDER)

@@ -20,12 +20,15 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk, Pango
+from gi.repository import Gdk, GLib, Gtk
 
 try:  # Direct executable invocation: `./agent-gui.py`.
     from config import (
+        COPIED_ICON,
+        PROACTIVE_ICON,
+        QUEUE_ICON,
         STREAM_CURSOR_CHAR,
-        TRANSCRIPT_FONT,
+        TOOL_ICON,
     )
     from markdown_renderer import light_stream_filter
     from protocol import content_text, content_thinking, is_heartbeat
@@ -39,8 +42,11 @@ try:  # Direct executable invocation: `./agent-gui.py`.
     from user_accents import draw_user_accents as paint_user_accents
 except ImportError:  # Package import from the repository test runner.
     from .config import (
+        COPIED_ICON,
+        PROACTIVE_ICON,
+        QUEUE_ICON,
         STREAM_CURSOR_CHAR,
-        TRANSCRIPT_FONT,
+        TOOL_ICON,
     )
     from .markdown_renderer import light_stream_filter
     from .protocol import content_text, content_thinking, is_heartbeat
@@ -166,7 +172,6 @@ class TranscriptController:
         self.view.set_editable(False)
         self.view.set_cursor_visible(False)
         self.view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.view.override_font(Pango.FontDescription.from_string(TRANSCRIPT_FONT))
 
     def _on_focus_event(self, _view, _event):
         self.queue_full_redraw()
@@ -211,6 +216,18 @@ class TranscriptController:
 
     def _make_tags(self):
         self._cursor_tag = create_transcript_tags(self.buffer)
+        self._font_tag = self.buffer.get_tag_table().lookup("transcript-font")
+        self.buffer.connect_after("insert-text", self._apply_font_to_insert)
+
+    def _apply_font_to_insert(self, _buf, location, text, _length):
+        """Keep the transcript family on every run, including untagged prose."""
+
+        if not text or self._font_tag is None:
+            return
+        end = location.copy()
+        start = location.copy()
+        start.backward_chars(len(text))
+        self.buffer.apply_tag(self._font_tag, start, end)
 
     def append(self, text, tag=None, newline=True, force_scroll=False):
         """Append one tagged/plain line while respecting user's scroll pin."""
@@ -381,7 +398,11 @@ class TranscriptController:
             if pid in self._pending_rows:
                 continue
             behavior = entry.get("behavior") or "steer"
-            prefix = "⏳ queued (follow-up)" if behavior == "followUp" else "⏳ queued (steer)"
+            prefix = (
+                f"{QUEUE_ICON} queued (follow-up)"
+                if behavior == "followUp"
+                else f"{QUEUE_ICON} queued (steer)"
+            )
             content = (entry.get("content") or "").replace("\n", " ").strip()
             if len(content) > 160:
                 content = content[:160] + "…"
@@ -506,8 +527,9 @@ class TranscriptController:
         self._append("⚠ " + (message or "error"), "error")
 
     def load_history(self, messages: Iterable[Mapping[str, Any]]):
-        """Render gateway history and schedule a post-layout bottom scroll."""
+        """Replace the transcript with gateway history and scroll to the bottom."""
 
+        self.clear()
         for message in messages or []:
             content = content_text(message.get("content") or "")
             if is_heartbeat(content):
@@ -548,7 +570,7 @@ class TranscriptController:
 
     def proactive(self, message):
         if not is_heartbeat(message):
-            self._append("💬 " + message, "system")
+            self._append(f"{PROACTIVE_ICON} " + message, "system")
 
     def handle_message(self, message_type: str, data: Mapping[str, Any] | None = None):
         """Route a gateway event that belongs to the transcript.
@@ -621,6 +643,17 @@ class TranscriptController:
             self.load_history(data.get("messages") or [])
         elif message_type == "proactive":
             self.proactive(data.get("message") or "")
+        elif message_type == "notify":
+            kind = data.get("notifyType") or "info"
+            text = data.get("message") or ""
+            if kind in ("error", "warning"):
+                self.error(text)
+            else:
+                self.proactive(text)
+        elif message_type == "extension_error":
+            path = data.get("extensionPath") or ""
+            prefix = f"{path}: " if path else ""
+            self.error(prefix + (data.get("message") or "extension error"))
 
     # Verbose aliases are convenient for callers that prefer event names over
     # the short protocol verbs above.
@@ -793,7 +826,7 @@ class TranscriptController:
     def toggle_tools(self):
         """Collapse/expand all tool-call blocks (Ctrl+O).
 
-        Collapsed blocks keep only their summary header (``▸ ⚙ bash  ls -la``);
+        Collapsed blocks keep only their summary header (``▸ cog bash  ls -la``);
         expanding restores the stored output bodies and copy buttons.
         """
 
@@ -816,7 +849,7 @@ class TranscriptController:
     def _insert_tool_header(self, end, parts):
         """Insert a themed tool header at ``end`` and advance the iterator.
 
-        The header reads ``▾ ⚙ bash  ls -la`` — dim glyphs, amber bold tool
+        The header reads ``▾ cog bash  ls -la`` — dim glyphs, amber bold tool
         name, cooler grey argument summary — so the tool identity pops while
         the payload stays readable.  Inserting in runs with one advancing
         iterator keeps the pieces in order.
@@ -825,7 +858,7 @@ class TranscriptController:
         header_start = end.get_offset()
         arrow = "▾" if self._show_tools else "▸"
         name, rest = parts
-        self.buffer.insert_with_tags_by_name(end, f"{arrow} ⚙ ", "tool")
+        self.buffer.insert_with_tags_by_name(end, f"{arrow} {TOOL_ICON} ", "tool")
         self.buffer.insert_with_tags_by_name(end, name, "tool-name")
         if rest:
             self.buffer.insert_with_tags_by_name(end, "  " + rest, "tool-args")
@@ -1242,7 +1275,7 @@ class TranscriptController:
         owner = self.parent or self.view
         clipboard = owner.get_clipboard(Gdk.SELECTION_CLIPBOARD)
         clipboard.set_text(text, -1)
-        self._set_status("⧉ copied")
+        self._set_status(f"{COPIED_ICON} copied")
 
     def _add_copy_button(self, text, at=None):
         position = at if at is not None else self.buffer.get_end_iter()

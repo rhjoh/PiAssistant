@@ -10,7 +10,7 @@ window, later presses minimize/restore it (see [Launcher key setup](#launcher-ke
 - `websockets` — threaded WebSocket transport
 - `markdown` — assistant-turn Markdown rendering
 - A monospace font for the transcript (set in `config.py`, default
-  `JetBrainsMono Nerd Font`)
+  `JetBrainsMonoNL Nerd Font`)
 
 ## Run
 
@@ -61,6 +61,13 @@ duplicates even on rapid launches) and removes it on exit.
   (`[Heartbeat]` / `[[NO_ACTION]]` markers)
 - **Ctrl+T** toggles thinking blocks; **Ctrl+O** collapses/expands tool-call
   blocks
+- Pi extension prompts (question tool, permission-gate, plan-mode, goal)
+  appear as a scrollable option/input panel above the composer; Escape cancels
+- Compaction, retries, and "waiting for your answer" show in the status bar
+  and a working banner above the prompt
+- Gateway errors, extension errors, and warning notifications render in red
+- The client reconnects if the gateway restarts and refreshes model/context
+  from pushed `state` events
 - Tool output and code blocks have copy buttons; with the transcript focused,
   `Ctrl+A` selects all and `Ctrl+Shift+C` copies the selection
 - Prompt entry: Enter sends, `Shift+Enter` inserts a newline, `Alt+Enter`
@@ -143,13 +150,23 @@ Standard gateway WebSocket messages (see `docs/ARCHITECTURE.md`).
 
 Sends: `prompt` (with optional `streamingBehavior` of `steer` or
 `followUp`), `abort`, `get_state`, `get_history`, `get_models`,
-`switch_model`, `get_thinking_levels`, `set_thinking_level`, `command`.
+`switch_model`, `get_thinking_levels`, `set_thinking_level`, `command`,
+`extension_ui_response`.
 
 Renders: `connection`, `state`, `models`, `thinking_levels`,
 `thinking_level_changed`, `model_switched`, `user_message`, `text_delta`,
 `thinking_delta`, `thinking_done`, `tool_start`, `tool_output`, `tool_end`,
 `done`, `response_segment_done`, `queue_update`, `prompt_accepted`,
-`prompt_queued`, `abort_complete`, `error`, `proactive`, `history`, `usage`.
+`prompt_queued`, `abort_complete`, `error`, `notify`, `extension_error`,
+`extension_ui_request`, `extension_ui_resolved`, `proactive`, `history`,
+`usage`.
+
+The client reconnects automatically if the gateway drops, reloads history
+on each connect, and treats pushed `state` events (including `sessionId`,
+`contextTokens`, `isProcessing`, and `working`) as authoritative. Errors
+render in red. Pi `select`/`confirm`/`input`/`editor` dialogs (question
+tool, permission-gate, plan mode, goal) appear as an interactive panel
+above the composer.
 
 ## Tests
 

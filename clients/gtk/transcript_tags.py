@@ -57,6 +57,13 @@ def build_tag_specs() -> dict[str, dict[str, object]]:
     background_rgba = _rgba(config.BG_COLOR)
 
     return {
+        # Lowest priority so size/colour tags still win, but every inserted
+        # run keeps this family.  GtkTextView otherwise inherits Inter from
+        # the theme, and ``family="monospace"`` resolves to Noto Sans Mono.
+        "transcript-font": dict(
+            family=config.transcript_font_family(),
+            size_points=config.transcript_font_size_pt(),
+        ),
         # A real, uncoloured spacer paragraph between transcript surfaces.
         # TextTag pixel padding is painted as part of a paragraph's
         # background, so it cannot create a visible gap.
@@ -113,7 +120,7 @@ def build_tag_specs() -> dict[str, dict[str, object]]:
             pixels_below_lines=2,
         ),
         "tool-output": dict(
-            family="monospace",
+            family=config.transcript_font_family(),
             paragraph_background_rgba=tool_block_rgba,
             left_margin=18,
             right_margin=18,
@@ -132,7 +139,10 @@ def build_tag_specs() -> dict[str, dict[str, object]]:
             right_margin=18,
             pixels_below_lines=6,
         ),
-        "error": dict(),
+        "error": dict(
+            foreground_rgba=_rgba(config.STATUS_ERR_COLOR),
+            weight=Pango.Weight.BOLD,
+        ),
         "system": dict(),
         "abort-status": dict(
             foreground_rgba=tool_meta_rgba,
@@ -154,8 +164,9 @@ def build_tag_specs() -> dict[str, dict[str, object]]:
         "md-h4": dict(weight=Pango.Weight.BOLD, scale=1.0, pixels_above_lines=5),
         "md-strong": dict(weight=Pango.Weight.BOLD),
         "md-em": dict(style=Pango.Style.ITALIC),
-        "md-code": dict(),
+        "md-code": dict(family=config.transcript_font_family()),
         "md-pre": dict(
+            family=config.transcript_font_family(),
             left_margin=config.CODE_MARGIN,
             right_margin=config.CODE_MARGIN,
         ),
